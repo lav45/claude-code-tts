@@ -126,6 +126,33 @@ class TestSherpaRouting:
         assert requested == ["vctk-vits"]
         assert captured == {"text": "hello there", "speaker": 42, "speed": 1.5, "output_path": out}
 
+    def test_supertonic_synthesizes_at_1_and_atempo_applies_the_speed(self, tmp_path, fake_sherpa_layout):
+        """Supertonic slurs the last words when it synthesises fast: the worker gets 1.0 and
+        ffmpeg atempo stretches the WAV to the persona's speed."""
+        model = fake_sherpa_layout["models"] / "supertonic-3"
+        model.mkdir()
+        (model / "tts.json").write_text("{}")
+        (model / "voice.bin").write_bytes(b"")
+        captured = {}
+
+        class FakeWorker:
+            def generate(self, text, *, speaker, speed, output_path):
+                captured.update(speed=speed)
+                Path(output_path).write_bytes(b"RIFFfake")
+                return True
+
+        filters = []
+        out = tmp_path / "out.wav"
+        with (
+            patch("claude_code_tts.audio._get_sherpa_worker", return_value=FakeWorker()),
+            patch("claude_code_tts.audio.shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("claude_code_tts.audio._apply_pitch_filter", side_effect=lambda p, f: filters.append(f)),
+        ):
+            generate_speech("hello there", voice_sherpa="supertonic-3", speaker_sherpa=3, speed=1.9, output_path=out)
+
+        assert captured == {"speed": 1.0}
+        assert filters[0] == "atempo=1.9"
+
     def test_sherpa_returns_none_if_venv_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(audio, "SHERPA_VENV_DIR", tmp_path / "no-venv")
         monkeypatch.setattr(audio, "SHERPA_MODELS_DIR", tmp_path / "models-noexist")

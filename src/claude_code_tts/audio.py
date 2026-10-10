@@ -24,6 +24,7 @@ from claude_code_tts.config import (
     TTSConfig,
     debug,
 )
+from claude_code_tts.sherpa_speak import is_supertonic
 
 
 def detect_platform() -> str:
@@ -612,15 +613,25 @@ def generate_speech(
     # Existing personas have voice_sherpa="" and never enter this branch —
     # they continue to use Piper / Kokoro exactly as before. New personas
     # set voice_sherpa to a model dir name under SHERPA_MODELS_DIR.
+    # Supertonic slurs the last words when it synthesises fast, so a Supertonic
+    # model speaks at 1.0 and ffmpeg atempo applies the speed. Other models, and
+    # Supertonic without ffmpeg, get the speed in synthesis as before.
     if voice_sherpa:
+        stretch = (
+            speed != 1.0
+            and is_supertonic(SHERPA_MODELS_DIR / voice_sherpa)
+            and shutil.which("ffmpeg") is not None
+        )
         wav = _generate_sherpa(
             text,
             model_id=voice_sherpa,
             speaker=speaker_sherpa,
-            speed=speed,
+            speed=1.0 if stretch else speed,
             output_path=output_path,
         )
         if wav:
+            if stretch:
+                _apply_pitch_filter(wav, f"atempo={speed}")
             _apply_pitch_filter(wav, pitch_filter)
             _spoke_with(f"sherpa:{voice_sherpa}" + (f"#{speaker_sherpa}" if speaker_sherpa is not None and speaker_sherpa >= 0 else ""))
             return wav
