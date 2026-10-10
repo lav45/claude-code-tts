@@ -26,6 +26,28 @@ import json
 import sys
 from pathlib import Path
 
+# Supertonic is multilingual and takes the language per request, not per
+# model. Set by _build_tts when it loads a Supertonic model; None otherwise.
+_SUPERTONIC_LANG = "ru"
+_lang: str | None = None
+
+
+def _generate(tts, text: str, sid: int, speed: float):
+    """tts.generate, passing the language for Supertonic models."""
+    if _lang is None:
+        return tts.generate(text, sid=sid, speed=speed)
+    import sherpa_onnx  # ty: ignore[unresolved-import]  (lives in the sherpa venv only)
+    cfg = sherpa_onnx.GenerationConfig()
+    cfg.sid = sid
+    cfg.speed = speed
+    cfg.extra = {"lang": _lang}
+    return tts.generate(text, cfg)
+
+
+def is_supertonic(model_dir: Path) -> bool:
+    """Supertonic layout: tts.json + voice.bin; multilingual, the language goes with each request."""
+    return (model_dir / "tts.json").is_file() and (model_dir / "voice.bin").is_file()
+
 
 def _build_tts(model_dir: Path):
     """Build an OfflineTts instance from a model directory.
@@ -47,8 +69,27 @@ def _build_tts(model_dir: Path):
     vocoder = model_dir / "vocoder.onnx"
     lexicon = model_dir / "lexicon.txt"
     data_dir = model_dir / "espeak-ng-data"
+    tts_json = model_dir / "tts.json"
 
-    if voices_bin.is_file() and model.is_file() and tokens.is_file():
+    if is_supertonic(model_dir):
+        # Supertonic layout
+        global _lang
+        _lang = _SUPERTONIC_LANG
+        cfg = sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                supertonic=sherpa_onnx.OfflineTtsSupertonicModelConfig(
+                    duration_predictor=str(model_dir / "duration_predictor.int8.onnx"),
+                    text_encoder=str(model_dir / "text_encoder.int8.onnx"),
+                    vector_estimator=str(model_dir / "vector_estimator.int8.onnx"),
+                    vocoder=str(model_dir / "vocoder.int8.onnx"),
+                    tts_json=str(tts_json),
+                    unicode_indexer=str(model_dir / "unicode_indexer.bin"),
+                    voice_style=str(model_dir / "voice.bin"),
+                ),
+                num_threads=4,
+            ),
+        )
+    elif voices_bin.is_file() and model.is_file() and tokens.is_file():
         # Kokoro layout
         cfg = sherpa_onnx.OfflineTtsConfig(
             model=sherpa_onnx.OfflineTtsModelConfig(
@@ -130,7 +171,7 @@ def _serve_mode(model_dir: Path) -> int:
     # audio frames during session init. Synthesise a throw-away phrase now so
     # all real requests are clean — no clipping, no audible prefix.
     try:
-        tts.generate(_WARMUP_TEXT, sid=0, speed=1.0)
+        _generate(tts, _WARMUP_TEXT, 0, 1.0)
     except Exception:
         pass  # warmup failure is non-fatal; first real request may still clip
 
@@ -168,9 +209,11 @@ def _serve_mode(model_dir: Path) -> int:
             cache_key = (sid, speed)
 
             # Measure warmup length on first call for this speaker+speed pair.
+            if _lang is not None:
+                _warmup_trim_cache[cache_key] = 0
             if cache_key not in _warmup_trim_cache:
                 try:
-                    w = tts.generate(_WARMUP_TEXT, sid=sid, speed=speed)
+                    w = _generate(tts, _WARMUP_TEXT, sid, speed)
                     _warmup_trim_cache[cache_key] = len(w.samples)
                 except Exception:
                     _warmup_trim_cache[cache_key] = 0
@@ -178,7 +221,8 @@ def _serve_mode(model_dir: Path) -> int:
             # Synthesise warmup + content, then slice off exactly the warmup
             # samples. This primes Kokoro's phoneme context without the user
             # hearing the preamble word.
-            audio = tts.generate(_WARMUP_TEXT + text, sid=sid, speed=speed)
+            prefix = "" if _lang is not None else _WARMUP_TEXT
+            audio = _generate(tts, prefix + text, sid, speed)
             if not audio.samples:
                 print(json.dumps({"ok": False, "error": "no samples generated"}), flush=True)
                 continue
@@ -239,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         return 4
 
     sid = args.speaker if args.speaker >= 0 else 0
-    audio = tts.generate(text, sid=sid, speed=args.speed)
+    audio = _generate(tts, text, sid, args.speed)
     if not audio.samples:
         print("sherpa_speak: generation produced no samples", file=sys.stderr)
         return 5
