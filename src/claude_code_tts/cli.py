@@ -375,7 +375,7 @@ def cmd_name(args: argparse.Namespace) -> None:
     """Show or set the name this session says for itself when it takes the floor.
 
     With `queue.speaker_transition` set to "announce" or "chime+announce", a room introduces
-    itself as "<name> of <house> house in <room> room" when the speaker changes, "Friend" until
+    itself as "<name> of house <house> in room <room>" when the speaker changes, "Friend" until
     it has chosen a name. The name is a session key, so a rebuilt room inherits it the way it
     inherits its persona, and the voice card carries it.
     """

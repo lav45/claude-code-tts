@@ -236,7 +236,7 @@ def test_speak_for_a_room_announces_the_room(server: Bridge, tts_home: Path) -> 
     msg = json.loads(next((tts_home / "queue").glob("*.json")).read_text())
     assert msg["session_id"] == "sbx--gpt--house-gpt"
     assert msg["source"] == "codex-tts"
-    assert speaker_line(msg) == "Aster of gpt house in house-gpt room"
+    assert speaker_line(msg) == "Aster of house gpt in room house-gpt"
 
 
 @pytest.mark.parametrize(

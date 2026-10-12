@@ -180,7 +180,7 @@ Running multiple Claude Code sessions? Use queue mode so they don't talk over ea
 The daemon queues messages and plays them in order, with a chime when switching between sessions.
 `queue.speaker_transition` picks the marker: `"chime"` (the default), `"announce"` (the new speaker
 introduces itself in its own voice), `"chime+announce"` (both) or `"none"`. A session whose id has the
-shape `owner--house--room` introduces itself as "<name> of <house> house in <room> room", the name
+shape `owner--house--room` introduces itself as "<name> of house <house> in room <room>", the name
 being what it set with `claude-tts name <name>` ("Friend" until then); any other session says
 "<project> says:".
 While one message plays, the next is already being synthesized, so the boundary between two

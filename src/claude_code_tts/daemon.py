@@ -1118,7 +1118,7 @@ def stream_message(
 def speaker_line(msg: dict) -> str:
     """The words a session says for itself when it takes the floor.
 
-    A room (session id owner--house--room) says "<name> of <house> house in <room> room", the
+    A room (session id owner--house--room) says "<name> of house <house> in room <room>", the
     name being the one the session chose with `claude-tts name`, "Friend" until it has one. A
     session that is not a room keeps the old "<project> says:", with its name in place of the
     project when it has one.
@@ -1129,7 +1129,7 @@ def speaker_line(msg: dict) -> str:
     if "--" in session_id:
         room = daemon_state.room_tag(session_id)
         who = name or "Friend"
-        return f"{who} of {house} house in {room} room" if house else f"{who} in {room} room"
+        return f"{who} of house {house} in room {room}" if house else f"{who} in room {room}"
     return f"{name or msg.get('project') or 'unknown'} says:"
 
 
@@ -1147,7 +1147,8 @@ def speaker_transition(
 
     "chime" is the boop alone; "announce" the words (who, or "<project> says:" when the caller
     gave none) in the new speaker's own voice; "chime+announce" the boop and then the words
-    (asked for 2026-10-08: "X of Y house in Z room" along with the boop); "none" is silence.
+    (asked for 2026-10-08: "X of Y house in Z room" along with the boop; since
+    9.54.0 the word comes first, "X of house Y in room Z"); "none" is silence.
     """
     if transition in ("chime", "chime+announce"):
         log(f"Speaker change: {last_speaker} -> {speaker_key}")

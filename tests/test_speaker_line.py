@@ -1,5 +1,5 @@
-"""A room introduces itself when it takes the floor: the boop, then "<name> of <house> house in
-<room> room" in its own voice (asked 2026-10-08). The name is a session key set with
+"""A room introduces itself when it takes the floor: the boop, then "<name> of house <house> in
+room <room>" in its own voice (asked 2026-10-08). The name is a session key set with
 `claude-tts name`; "Friend" until then. Sessions that are not rooms keep "<project> says:".
 """
 
@@ -34,14 +34,14 @@ class TestHouseTag:
 class TestSpeakerLine:
     def test_a_named_room_says_name_house_and_room(self):
         msg = {"session_id": "alice--claude--claude-code-tts", "name": "Connery", "project": "tts"}
-        assert d.speaker_line(msg) == "Connery of claude house in tts room"
+        assert d.speaker_line(msg) == "Connery of house claude in room tts"
 
     def test_an_unnamed_room_is_a_friend(self):
         msg = {"session_id": "alice--claude--k8s", "project": "k8s"}
-        assert d.speaker_line(msg) == "Friend of claude house in k8s room"
+        assert d.speaker_line(msg) == "Friend of house claude in room k8s"
 
     def test_a_room_with_no_house_names_the_room_only(self):
-        assert d.speaker_line({"session_id": "two--notes", "name": "Lyra"}) == "Lyra in notes room"
+        assert d.speaker_line({"session_id": "two--notes", "name": "Lyra"}) == "Lyra in room notes"
 
     def test_a_plain_session_keeps_project_says(self):
         assert d.speaker_line({"session_id": "-Users-x-proj", "project": "proj"}) == "proj says:"
@@ -50,7 +50,7 @@ class TestSpeakerLine:
         assert d.speaker_line({"session_id": "-Users-x-proj", "project": "proj", "name": "Pat"}) == "Pat says:"
 
     def test_blank_name_is_no_name(self):
-        assert d.speaker_line({"session_id": "a--h--r", "name": "   "}) == "Friend of h house in r room"
+        assert d.speaker_line({"session_id": "a--h--r", "name": "   "}) == "Friend of house h in room r"
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def transition(tmp_path, monkeypatch):
 
 
 class TestSpeakerTransition:
-    WHO = "Connery of claude house in tts room"
+    WHO = "Connery of house claude in room tts"
 
     def run(self, mode, who=WHO):
         d.speaker_transition(mode, "a", "b", "tts", "claude-connery", 1.8, "playback", who=who)
@@ -118,7 +118,7 @@ class TestNameCommand:
         cmd_name(argparse.Namespace(name="Connery"))
         out = capsys.readouterr().out
         assert "Name set: Connery" in out
-        assert "Says:     Connery of claude house in tts room" in out
+        assert "Says:     Connery of house claude in room tts" in out
         assert config.session_read(room)["name"] == "Connery"
 
         cmd_name(argparse.Namespace(name=None))
@@ -130,7 +130,7 @@ class TestNameCommand:
         assert config.session_read(room)["name"] == ""
         assert "introduces itself as Friend" in capsys.readouterr().out
         cmd_name(argparse.Namespace(name=None))
-        assert "Friend of claude house in tts room" in capsys.readouterr().out
+        assert "Friend of house claude in room tts" in capsys.readouterr().out
 
     def test_says_when_the_transition_will_not_speak_it(self, room, tmp_path, capsys):
         import argparse
