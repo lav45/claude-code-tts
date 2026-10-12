@@ -108,7 +108,7 @@ just release --check        # preflight and gate only; prints the plan
 | `/tts-config` | Every stored config key next to the shipped default; `--changed` shows only the ones that differ |
 | `/tts-mute` | Mute this session |
 | `/tts-unmute` | Unmute this session |
-| `/tts-name [name\|reset]` | Show/set the name this session says for itself on a speaker change: with `queue.speaker_transition` `"chime+announce"` (or `"announce"`), the boop then "<name> of house <house> in room <room>" in its own voice, "Friend" until named (9.51.0) |
+| `/tts-name [name\|reset]` | Show/set the name this session says for itself on a speaker change: with `queue.speaker_transition` `"chime+announce"` (or `"announce"`), the boop then the line the config's `speaker_lines` rules make for its id (docs/speaker-lines.md; the shipped `rooms` set says "<name> of house <house> in room <room>", "Friend" until named), else "<name or project> says:"; shows which rule matched and why others were skipped (9.55.0) |
 | `/tts-focus` | Hold every other friend's voice, this session keeps speaking; `claude-tts hold --let <room>` lets another through; bare `claude-tts hold` over a hold only shows it, `--clear` empties the list (9.52.0) |
 | `/tts-kraken` | Release the kraken: everyone speaks again (`claude-tts kraken`); `--drop` drops what the hold kept first (by id, one `dropped (kraken)` ledger line each), so a long hold is not replayed on release |
 | `/tts-speed [value]` | Show/set speech speed (0.5-4.0) |
@@ -157,6 +157,7 @@ src/claude_code_tts/
   msgqueue.py              # The queue directory: scan, order, age, trim, PauseLedger, control messages; the only module that names it
   ledger.py                # The voice ledger: every reply a hook accepted, in full and before the filter, plus the daemon's outcome per id; append only
   bridge.py                # Opt-in loopback HTTP bridge (browser pages -> queue, timing marks)
+  speakerline.py           # What a session says when it takes the floor: speaker_lines rules from config, the shipped "rooms" set
   outputdevice.py          # Which device the Mac plays through, from system_profiler; the daemon's poll thread and the status line's words
   install.py               # Installer (hooks, voices, service)
   signature.py             # Voice signatures: tolerant shape of a WAV, compared with tolerances, not by ear
@@ -183,6 +184,7 @@ docs/
   voice-notes.md           # Voice compatibility knowledge base
   hotkey-setup.md          # Pause/resume hotkey setup guide
   http-bridge.md           # HTTP bridge contract (routes, marks, threat model)
+  speaker-lines.md         # The speaker_lines rules: config shape, fields, the shipped sets, the upgrade
   voice-card.md            # The per-session voice card a status line reads: path, fields, freshness, how a reader finds its session
   mlx-backend.md           # mlx-audio backend: enable, pull, persona keys, speed rule, licenses
   what-and-why.md          # What the system does and why, with no how; the fixed points for any redesign

@@ -224,7 +224,7 @@ def test_speak_writes_queue_file_and_job(server: Bridge, tts_home: Path) -> None
 
 def test_speak_for_a_room_announces_the_room(server: Bridge, tts_home: Path) -> None:
     """A bridge client speaking for a room says that room's line, not "<source>:<label> says:"."""
-    from claude_code_tts.daemon import speaker_line
+    from claude_code_tts.speakerline import speak_line
 
     status, _, _ = call(
         server,
@@ -236,7 +236,7 @@ def test_speak_for_a_room_announces_the_room(server: Bridge, tts_home: Path) -> 
     msg = json.loads(next((tts_home / "queue").glob("*.json")).read_text())
     assert msg["session_id"] == "sbx--gpt--house-gpt"
     assert msg["source"] == "codex-tts"
-    assert speaker_line(msg) == "Aster of house gpt in room house-gpt"
+    assert speak_line(msg, ["rooms"]).line == "Aster of house gpt in room house-gpt"
 
 
 @pytest.mark.parametrize(

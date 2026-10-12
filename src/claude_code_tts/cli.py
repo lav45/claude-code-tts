@@ -374,33 +374,34 @@ def set_default_speed(speed: float, all_personas: bool = False, session_id: str 
 def cmd_name(args: argparse.Namespace) -> None:
     """Show or set the name this session says for itself when it takes the floor.
 
-    With `queue.speaker_transition` set to "announce" or "chime+announce", a room introduces
-    itself as "<name> of house <house> in room <room>" when the speaker changes, "Friend" until
-    it has chosen a name. The name is a session key, so a rebuilt room inherits it the way it
-    inherits its persona, and the voice card carries it.
+    With `queue.speaker_transition` set to "announce" or "chime+announce", the session says a
+    line for itself when the speaker changes, made by the first `speaker_lines` rule in config
+    that matches its id (speakerline.py), else "<name or project> says:". The name is a session
+    key, so a rebuilt session inherits it the way it inherits its persona, and the voice card
+    carries it. This prints which rule matched and every rule that was skipped and why.
     """
-    from claude_code_tts.daemon import speaker_line
-    from claude_code_tts.state import house_tag, room_tag
+    from claude_code_tts.speakerline import speak_line
 
     sid = get_session_id()
     value = (args.name or "").strip()
     if value.lower() == "reset":
         session_set(sid, "name", "")
-        print("Name cleared: this session introduces itself as Friend")
-        return
-    if value:
+        print("Name cleared")
+    elif value:
         if len(value) > 64:
             print("A name is 64 characters at most")
             sys.exit(1)
         session_set(sid, "name", value)
         print(f"Name set: {value}")
     name = str(session_read(sid).get("name") or "")
-    line = speaker_line({"session_id": sid, "name": name, "project": sid})
-    print(f"Name:     {name or '(none, says Friend)'}")
-    if "--" in sid and not sid.startswith("-"):
-        print(f"House:    {house_tag(sid) or '(none)'}")
-        print(f"Room:     {room_tag(sid)}")
-    print(f"Says:     {line}")
+    spoken = speak_line({"session_id": sid, "name": name, "project": sid}, load_raw_config().get("speaker_lines"))
+    print(f"Name:     {name or '(none)'}")
+    for key, val in spoken.fields.items():
+        print(f"{key.capitalize() + ':':<10}{val}")
+    print(f"Rule:     {spoken.rule or '(none matched: <name or project> says:)'}")
+    for why in spoken.skipped:
+        print(f"Skipped:  {why}")
+    print(f"Says:     {spoken.line}")
     transition = load_raw_config().get("queue", {}).get("speaker_transition", "chime")
     if transition not in ("announce", "chime+announce"):
         print(f"Heard:    not yet; queue.speaker_transition is {transition!r}, set it to \"chime+announce\" to hear it")

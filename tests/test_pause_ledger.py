@@ -201,7 +201,7 @@ class TestLoopHoldsQueueWhilePaused:
             runner.join(timeout=5)
         finally:
             d._shutdown_requested = False
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert spoken == ["waited through the meeting"]
         assert read_playback_state().get("current_message") is None
@@ -365,7 +365,7 @@ class TestMicHoldLimit:
                 time.sleep(0.05)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert spoken == ["spoken once the hold expires"]
         log = (state_dir / "daemon.log").read_text()
@@ -407,7 +407,7 @@ class TestMicHoldLimit:
                 time.sleep(0.05)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         log = (state_dir / "daemon.log").read_text()
         notices = [ln for ln in log.splitlines() if "Still paused by user for" in ln]
@@ -495,7 +495,7 @@ class TestPauseLandsWithTheMessage:
         finally:
             if runner is not None:
                 stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert spoken == ["arrived with the pause"]
 
@@ -536,7 +536,7 @@ class TestPauseLandsWithTheMessage:
         finally:
             if runner is not None:
                 stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert played.exists(), "the held message plays on resume"
         assert spoken == ["synthesized, then held"] * 2, "resumed as the interrupted message, synthesized again"

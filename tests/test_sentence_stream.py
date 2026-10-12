@@ -691,7 +691,7 @@ class TestWholeMessageStop:
                 stop_loop(runner)
             state = read_playback_state()
         finally:
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
             write_playback_state(paused=False, paused_by=None, current_message=None)
         return msg["id"], spoken, marker, state

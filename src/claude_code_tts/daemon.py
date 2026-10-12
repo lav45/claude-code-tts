@@ -1118,22 +1118,13 @@ def stream_message(
 def speaker_line(msg: dict) -> str:
     """The words a session says for itself when it takes the floor.
 
-    A room (session id owner--house--room) says "<name> of house <house> in room <room>", the
-    name being the one the session chose with `claude-tts name`, "Friend" until it has one. A
-    session that is not a room keeps the old "<project> says:", with its name in place of the
-    project when it has one.
+    The config's `speaker_lines` rules decide it, read at each change so an edit is heard at the
+    next one (speakerline.py has the rule shape and the shipped "rooms" set). With no rule
+    matching, "<name or project> says:", the line before 9.51.0.
     """
-    session_id = str(msg.get("session_id") or "")
-    name = str(msg.get("name") or "").strip()
-    house = daemon_state.house_tag(session_id)
-    # A Claude Code project folder id is an absolute path with "/" and "." turned into "-", so
-    # it starts with "-" and has "--" wherever the path has a dot folder: that is a project,
-    # not an owner--house--room id, and keeps "<project> says:".
-    if "--" in session_id and not session_id.startswith("-"):
-        room = daemon_state.room_tag(session_id)
-        who = name or "Friend"
-        return f"{who} of house {house} in room {room}" if house else f"{who} in room {room}"
-    return f"{name or msg.get('project') or 'unknown'} says:"
+    from claude_code_tts.speakerline import speak_line
+
+    return speak_line(msg, load_raw_config().get("speaker_lines")).line
 
 
 def speaker_transition(

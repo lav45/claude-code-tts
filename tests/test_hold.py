@@ -211,7 +211,7 @@ class TestLoopLetsRoomsThrough:
             assert _wait_for(lambda: "a waits" in spoken)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         log = (state_dir / "daemon.log").read_text()
         assert "letting b through" in log
@@ -251,7 +251,7 @@ class TestLoopLetsRoomsThrough:
             assert _wait_for(lambda: "a was cut off" in spoken)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert "put back in the queue" in (state_dir / "daemon.log").read_text()
 

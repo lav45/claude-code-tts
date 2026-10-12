@@ -97,7 +97,9 @@ def _run_loop(daemon_env, fake_generate, play_duration, stop_when, before_stop=N
         rn.join(timeout=5)
         assert not rn.is_alive(), "daemon loop did not exit after the shutdown request"
     finally:
-        for pt in patches:
+        # Last started, first stopped: an extra patch over the same attribute (load_raw_config)
+        # stopped after the base one would put the base mock back for every later test.
+        for pt in reversed(patches):
             pt.stop()
 
 

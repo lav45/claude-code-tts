@@ -421,3 +421,24 @@ class TestSpeakByDefaultMigration:
 
     def test_default_config_is_already_current(self):
         assert install.DEFAULT_CONFIG["version"] == install.CONFIG_VERSION
+
+    def test_an_announcing_config_keeps_the_room_lines(self, cfg_home):
+        self._write(cfg_home, {"queue": {"speaker_transition": "chime+announce"}})
+        install._migrate_speaker_lines()
+        assert self._read(cfg_home)["speaker_lines"] == ["rooms"]
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"queue": {"speaker_transition": "chime"}},
+            {"queue": {"speaker_transition": "announce"}, "speaker_lines": []},
+            {},
+        ],
+    )
+    def test_speaker_lines_are_left_alone_when_set_or_not_announcing(self, cfg_home, cfg):
+        self._write(cfg_home, cfg)
+        install._migrate_speaker_lines()
+        assert self._read(cfg_home).get("speaker_lines") == cfg.get("speaker_lines")
+
+    def test_a_fresh_install_has_no_speaker_lines(self):
+        assert "speaker_lines" not in install.DEFAULT_CONFIG

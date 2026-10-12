@@ -179,10 +179,9 @@ Running multiple Claude Code sessions? Use queue mode so they don't talk over ea
 
 The daemon queues messages and plays them in order, with a chime when switching between sessions.
 `queue.speaker_transition` picks the marker: `"chime"` (the default), `"announce"` (the new speaker
-introduces itself in its own voice), `"chime+announce"` (both) or `"none"`. A session whose id has the
-shape `owner--house--room` introduces itself as "<name> of house <house> in room <room>", the name
-being what it set with `claude-tts name <name>` ("Friend" until then); any other session says
-"<project> says:".
+introduces itself in its own voice), `"chime+announce"` (both) or `"none"`. The words are
+"<project> says:", or the name set with `claude-tts name <name>`; rules in `speaker_lines` can make
+a session say more, from an id you give it, see [docs/speaker-lines.md](docs/speaker-lines.md).
 While one message plays, the next is already being synthesized, so the boundary between two
 messages costs the chime and the player start, not a synthesis. Set `queue.prefetch_next` to
 `false` to hear the difference. Loaded models (sherpa, mlx) stay resident between messages and
