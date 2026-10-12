@@ -397,7 +397,7 @@ def cmd_name(args: argparse.Namespace) -> None:
     name = str(session_read(sid).get("name") or "")
     line = speaker_line({"session_id": sid, "name": name, "project": sid})
     print(f"Name:     {name or '(none, says Friend)'}")
-    if "--" in sid:
+    if "--" in sid and not sid.startswith("-"):
         print(f"House:    {house_tag(sid) or '(none)'}")
         print(f"Room:     {room_tag(sid)}")
     print(f"Says:     {line}")

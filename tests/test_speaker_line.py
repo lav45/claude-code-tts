@@ -49,6 +49,10 @@ class TestSpeakerLine:
     def test_a_plain_session_with_a_name_says_the_name(self):
         assert d.speaker_line({"session_id": "-Users-x-proj", "project": "proj", "name": "Pat"}) == "Pat says:"
 
+    @pytest.mark.parametrize("sid", ["-Users-alice--dotfiles", "-Users-alice-work-my--app--v2"])
+    def test_a_project_folder_with_a_double_dash_is_not_a_room(self, sid):
+        assert d.speaker_line({"session_id": sid, "project": sid}) == f"{sid} says:"
+
     def test_blank_name_is_no_name(self):
         assert d.speaker_line({"session_id": "a--h--r", "name": "   "}) == "Friend of house h in room r"
 

@@ -1126,7 +1126,10 @@ def speaker_line(msg: dict) -> str:
     session_id = str(msg.get("session_id") or "")
     name = str(msg.get("name") or "").strip()
     house = daemon_state.house_tag(session_id)
-    if "--" in session_id:
+    # A Claude Code project folder id is an absolute path with "/" and "." turned into "-", so
+    # it starts with "-" and has "--" wherever the path has a dot folder: that is a project,
+    # not an owner--house--room id, and keeps "<project> says:".
+    if "--" in session_id and not session_id.startswith("-"):
         room = daemon_state.room_tag(session_id)
         who = name or "Friend"
         return f"{who} of house {house} in room {room}" if house else f"{who} in room {room}"
