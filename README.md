@@ -79,7 +79,7 @@ After installation, just use Claude Code. Every response gets spoken, in new ses
 | `/tts-unmute` | Enable voice for this session |
 | `/tts-voices` | Every provider's voices: installed, available, who uses them, how to hear one |
 | `/tts-mute` | Silence voice for this session |
-| `/tts-focus` | Hold everyone else's voice; this session keeps speaking (`claude-tts hold --me`) |
+| `/tts-focus` | Hold everyone else's voice; this session keeps speaking (`claude-tts hold --me`); a bare `claude-tts hold` over a hold shows it and changes nothing |
 | `/tts-name [name\|reset]` | The name this session says for itself when the speaker changes (see `speaker_transition`) |
 | `/tts-kraken` | Release the kraken: everyone speaks again (`claude-tts kraken`); `claude-tts kraken --drop` drops what the hold kept first |
 | `/tts-status` | Show session status (mute, persona, mode, daemon, mic-aware) |

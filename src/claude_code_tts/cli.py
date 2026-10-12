@@ -1673,22 +1673,41 @@ def cmd_pause(args: argparse.Namespace) -> None:
 def cmd_hold(args: argparse.Namespace) -> None:
     """Hold everyone; let the named rooms (and this session, with --me) speak on.
 
-    Bare `hold` holds everyone and clears the list. `--let` and `--me` add to the list of a
-    hold already in place, so a person can let one friend through, then a second. The rooms
-    not on the list queue behind the scenes until `claude-tts kraken` lets everyone speak.
+    Bare `hold` holds everyone when nobody holds them. Over a person's hold already in place
+    it changes nothing and prints that hold, so it is safe as a question: through 9.51.2 it
+    cleared the list, and a person asking "who is held" undid a --let from two days before.
+    `--let` and `--me` add to the list, so a person can let one friend through, then a
+    second; `--clear` empties the list first, and with `--let` leaves only the rooms named.
+    The rooms not on the list queue behind the scenes until `claude-tts kraken`.
     """
-    from claude_code_tts.state import hold, let_rooms, room_tag
+    from claude_code_tts.state import hold, let_rooms, read_playback_state, room_tag
 
     rooms = list(args.let or [])
     if args.me:
         rooms.append(get_session_id())
-    state = hold([]) if not rooms else let_rooms(rooms)
+    before = read_playback_state()
+    held_by_person = bool(before.get("paused") and before.get("paused_by") == "user")
+    if args.clear:
+        state = hold(rooms)
+    elif rooms:
+        state = let_rooms(rooms)
+    elif held_by_person:
+        state = before
+    else:
+        state = hold([])
     letting = state.get("let_through") or []
-    if letting:
-        names = ", ".join(room_tag(r) if r == get_session_id() else r for r in letting)
+    names = ", ".join(room_tag(r) if r == get_session_id() else r for r in letting)
+    if state is before:
+        print(f"Already held, nothing changed. Letting through: {names or 'nobody'}")
+        print("claude-tts hold --let <room> adds one, --clear empties the list, claude-tts kraken releases")
+    elif letting:
         print(f"Held. Letting through: {names}")
     else:
         print("Held. Nobody is let through; claude-tts hold --let <room> or claude-tts kraken")
+    was = list(before.get("let_through") or []) if held_by_person else None
+    dropped = [r for r in (was or []) if r not in letting]
+    if dropped:
+        print(f"No longer let through: {', '.join(dropped)}")
     if state.get("mic_held"):
         print("A recording is in progress; the rooms let through wait for it to end")
 
@@ -4462,9 +4481,12 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_pause)
 
     # --- hold / kraken ---
-    p = subparsers.add_parser("hold", help="Hold everyone; --let ROOM... and --me let named rooms speak on")
+    p = subparsers.add_parser(
+        "hold", help="Hold everyone (bare over a hold: show it, change nothing); --let ROOM... and --me let rooms speak on"
+    )
     p.add_argument("--let", nargs="+", metavar="ROOM", help="Room tags (tts, notes) or session ids to let through")
     p.add_argument("--me", action="store_true", help="Let this session through")
+    p.add_argument("--clear", action="store_true", help="Empty the let-through list first; with --let, only those rooms")
     p.set_defaults(func=cmd_hold)
     p = subparsers.add_parser("kraken", help="Release the kraken: everyone speaks again")
     p.add_argument("--drop", action="store_true", help="Drop what the hold kept first, so nothing held is replayed")
