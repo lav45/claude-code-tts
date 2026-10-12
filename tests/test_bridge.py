@@ -222,6 +222,34 @@ def test_speak_writes_queue_file_and_job(server: Bridge, tts_home: Path) -> None
     assert "updated_at" not in job
 
 
+def test_speak_for_a_room_announces_the_room(server: Bridge, tts_home: Path) -> None:
+    """A bridge client speaking for a room says that room's line, not "<source>:<label> says:"."""
+    from claude_code_tts.daemon import speaker_line
+
+    status, _, _ = call(
+        server,
+        "POST",
+        "/speak",
+        {"text": "Hi.", "source": "codex-tts", "label": "Codex", "session": "sbx--gpt--house-gpt", "name": "Aster"},
+    )
+    assert status == 202
+    msg = json.loads(next((tts_home / "queue").glob("*.json")).read_text())
+    assert msg["session_id"] == "sbx--gpt--house-gpt"
+    assert msg["source"] == "codex-tts"
+    assert speaker_line(msg) == "Aster of gpt house in house-gpt room"
+
+
+@pytest.mark.parametrize(
+    "session", ["../x--y", "a--b/c", "browser", "a---b", "a--b--c--d--e--f--g", "a--b c", "é--b"]
+)
+def test_speak_refuses_a_session_that_is_not_a_room(server: Bridge, session: str) -> None:
+    assert call(server, "POST", "/speak", {"text": "x", "session": session})[0] == 400
+
+
+def test_speak_refuses_a_long_name(server: Bridge) -> None:
+    assert call(server, "POST", "/speak", {"text": "x", "session": "a--b--c", "name": "n" * 65})[0] == 400
+
+
 def test_speak_validation(server: Bridge) -> None:
     assert call(server, "POST", "/speak", {"text": ""})[0] == 400
     assert call(server, "POST", "/speak", {"text": "x", "persona": "nope"})[0] == 400

@@ -66,8 +66,9 @@ def depth() -> int:
 #   timestamp           all            scan and play order, cleanup_old_messages, enforce_max_depth
 #   type "control"      control        next_speakable; daemon.py:daemon_loop hands it to
 #                                      handle_control_message
-#   session_id          all            daemon.py:prepare_message ("browser" for the bridge,
-#                                      "system" for control)
+#   session_id          all            daemon.py:prepare_message ("browser" for the bridge
+#                                      unless its client names a room, "system" for control)
+#   name                hook, bridge   daemon.py:speaker_line, opt. (the name a room says)
 #   project             hook, bridge   daemon.py:prepare_message, register_queued_bridge_jobs,
 #                                      daemon_loop and daemon_status (log and print lines);
 #                                      enforce_max_depth (log line)

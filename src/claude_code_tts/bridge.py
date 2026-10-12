@@ -214,6 +214,11 @@ JOBS = JobRegistry()
 
 # --- Queue side ---
 
+# A session a bridge client speaks for: owner--house--room, the shape a room's
+# CLAUDE_TTS_SESSION has; words of letters, digits and _, joined by single dashes, so
+# nothing in it can name a path.
+SESSION_RE = re.compile(r"\w+(?:-\w+)*(?:--\w+(?:-\w+)*){1,4}", re.ASCII)
+
 
 def write_bridge_message(
     text: str,
@@ -224,16 +229,21 @@ def write_bridge_message(
     label: str = "",
     want_marks: bool = False,
     lane: str = "",
+    session: str = "",
+    name: str = "",
 ) -> dict:
     """Write a queue file the way a hook does, tagged with its source.
 
     session_id is "browser" and project is "<source>:<label>", so the daemon's
-    speaker-transition chime fires when a room and the page interleave. lane
-    "background" lets every other message go first (see daemon.play_order).
+    speaker-transition chime fires when a room and the page interleave. A client that
+    speaks for a room gives `session` (owner--house--room) and `name`: the message then
+    takes that room's place, so it says "<name> of <house> house in <room> room" and a
+    hold's --let names it like any room. lane "background" lets every other message go
+    first (see daemon.play_order).
     """
     project = f"{source}:{label}" if label else source
     fields = {
-        "session_id": "browser",
+        "session_id": session or "browser",
         "project": project,
         "text": text,
         "persona": persona,
@@ -244,6 +254,8 @@ def write_bridge_message(
     }
     if lane:
         fields["lane"] = lane
+    if name:
+        fields["name"] = name
     _, message = msgqueue.write_message(fields)
     JOBS.create(message["id"], source=source, project=project, persona=persona, lane=lane)
     return message
@@ -615,6 +627,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if lane not in ("", "background"):
             self._send_json(400, {"error": "lane must be omitted or \"background\"", "lane": lane})
             return
+        session = str(body.get("session") or "")
+        if session and not SESSION_RE.fullmatch(session):
+            self._send_json(400, {"error": "session must be owner--house--room in letters, digits, _ . -"})
+            return
+        name = str(body.get("name") or "").strip()
+        if len(name) > 64:
+            self._send_json(400, {"error": "name is 64 characters at most"})
+            return
         msg = write_bridge_message(
             text,
             persona=persona,
@@ -623,6 +643,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             label=label,
             want_marks=bool(body.get("want_marks", False)),
             lane=lane,
+            session=session,
+            name=name,
         )
         self._send_json(202, {"id": msg["id"], "state": "queued"})
 
