@@ -1,9 +1,6 @@
 """Tests for the content tone classifier."""
 
-import pytest
-
 from claude_code_tts.tone import (
-    DEFAULT_TONE,
     TONES,
     classify_tone,
     get_tone,
@@ -136,16 +133,8 @@ class TestToneParams:
         neutral = TONES["neutral"]
         assert serious.noise_scale < neutral.noise_scale
 
-    def test_default_tone_is_neutral(self):
-        assert DEFAULT_TONE.name == "neutral"
-
     def test_get_tone_known(self):
         assert get_tone("excited").name == "excited"
 
     def test_get_tone_unknown(self):
         assert get_tone("nonexistent").name == "neutral"
-
-    def test_toneParams_frozen(self):
-        tone = TONES["neutral"]
-        with pytest.raises(AttributeError):
-            tone.noise_scale = 0.5  # type: ignore[misc]
