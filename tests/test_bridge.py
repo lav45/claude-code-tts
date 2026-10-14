@@ -344,6 +344,24 @@ def test_speak_background_lane_is_written_and_validated(server: Bridge, tts_home
     assert status == 400 and body["lane"] == "urgent"
 
 
+def test_speak_now_lane_is_written_and_tells_the_daemon(server: Bridge, tts_home: Path) -> None:
+    calls: list[int] = []
+    server._server.preempt = lambda: calls.append(1)  # type: ignore[union-attr]
+    status, body, _ = call(server, "POST", "/speak", {"text": "clicked", "lane": "now"})
+    assert status == 202
+    assert [json.loads(f.read_text())["lane"] for f in (tts_home / "queue").glob("*.json")] == ["now"]
+    assert calls == [1]
+
+
+def test_speak_now_lane_under_a_recording_waits_without_a_cut(server: Bridge, tts_home: Path) -> None:
+    calls: list[int] = []
+    server._server.preempt = lambda: calls.append(1)  # type: ignore[union-attr]
+    server.fake.state.update(paused=True, paused_by="mic", paused_since=1.0)  # type: ignore[attr-defined]
+    status, _, _ = call(server, "POST", "/speak", {"text": "clicked", "lane": "now"})
+    assert status == 202
+    assert calls == [], "nothing may play during a recording, so nothing is cut for it"
+
+
 def test_jobs_listed_by_source_oldest_first(server: Bridge) -> None:
     _, a, _ = call(server, "POST", "/speak", {"text": "one", "source": "page"})
     _, b, _ = call(server, "POST", "/speak", {"text": "two", "source": "page"})

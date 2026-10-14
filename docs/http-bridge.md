@@ -96,7 +96,16 @@ separate "daemon down" answer because the bridge lives inside the daemon.
   mid-read is spoken at the next block boundary instead of behind every queued block. Within a
   lane the order is arrival order. Ageing (`max_age_seconds`) and depth trimming still count
   by arrival, so a background block that waits behind a busy session can age out; keep only a
-  few blocks queued and top up as they finish. Any other value: `400`.
+  few blocks queued and top up as they finish.
+  `"now"` is for a block a person just clicked to hear: it plays before everything queued. A
+  room speaking when it arrives is cut off at the play loop's next poll (every 50 ms), the
+  way a pause cuts it (in sentence mode, the sentence playing is cut), and resumes where it
+  stopped, rewound a little, once no now block is left; then the queue goes on in order. Now
+  blocks never cut each other: a second click queues behind the first (send `/stop` for the
+  page's source first to replace a read). A person's hold that began before the block was
+  queued does not hold it; a pause pressed during the read does, and a recording holds it as
+  it holds everything. Added in 9.58.0; an older bridge answers `400` for it, so a page can
+  send it and resend without `lane` on that `400`. Any other value: `400`.
 
 Response `202`:
 

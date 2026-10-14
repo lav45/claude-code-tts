@@ -240,7 +240,8 @@ def write_bridge_message(
     speaks for a room gives `session` (owner--house--room) and `name`: the message then
     takes that room's place, so it says "<name> of house <house> in room <room>" and a
     hold's --let names it like any room. lane "background" lets every other message go
-    first (see daemon.play_order).
+    first, and lane "now" goes before everything (see msgqueue.play_order); the caller
+    tells the daemon a now block is waiting.
     """
     project = f"{source}:{label}" if label else source
     fields = {
@@ -451,6 +452,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         mic_hold_max_s: Callable[[], float] | None = None,
         set_let_through: Callable[[list[str]], dict] | None = None,
         read_output_device: Callable[[], dict | None] | None = None,
+        preempt: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(address, BridgeHandler)
         self.token = token
@@ -462,6 +464,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.mic_hold_max_s = mic_hold_max_s or (lambda: 0.0)
         self.set_let_through = set_let_through
         self.read_output_device = read_output_device or (lambda: None)
+        self.preempt = preempt or (lambda: None)
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -628,8 +631,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         source = re.sub(r"[^A-Za-z0-9_.-]", "", str(body.get("source") or "browser"))[:32]
         label = str(body.get("label", ""))[:80]
         lane = str(body.get("lane") or "")
-        if lane not in ("", "background"):
-            self._send_json(400, {"error": "lane must be omitted or \"background\"", "lane": lane})
+        if lane not in ("", msgqueue.BACKGROUND_LANE, msgqueue.NOW_LANE):
+            self._send_json(400, {"error": "lane must be omitted, \"background\" or \"now\"", "lane": lane})
             return
         session = str(body.get("session") or "")
         if session and not SESSION_RE.fullmatch(session):
@@ -650,6 +653,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             session=session,
             name=name,
         )
+        if lane == msgqueue.NOW_LANE and may_play(
+            self.server.read_playback_state(), str(msg.get("session_id", "")), lane, msg.get("timestamp")
+        ):
+            # After the file is written: the loop's next scan must find what it was cut off for.
+            self.server.preempt()
         self._send_json(202, {"id": msg["id"], "state": "queued"})
 
     def _stop(self, body: dict) -> None:
@@ -841,6 +849,7 @@ class Bridge:
         mic_hold_max_s: Callable[[], float] | None = None,
         set_let_through: Callable[[list[str]], dict] | None = None,
         read_output_device: Callable[[], dict | None] | None = None,
+        preempt: Callable[[], None] | None = None,
     ) -> None:
         self._log = log_fn
         self._read_state = read_playback_state
@@ -849,6 +858,7 @@ class Bridge:
         self._mic_hold_max_s = mic_hold_max_s or (lambda: 0.0)
         self._set_let_through = set_let_through
         self._read_output_device = read_output_device
+        self._preempt = preempt
         self._server: BridgeHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -873,6 +883,7 @@ class Bridge:
                 mic_hold_max_s=self._mic_hold_max_s,
                 set_let_through=self._set_let_through,
                 read_output_device=self._read_output_device,
+                preempt=self._preempt,
             )
         except OSError as e:
             self._log(f"HTTP bridge could not listen on {bind}:{port}: {e}")
