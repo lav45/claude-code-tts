@@ -91,7 +91,7 @@ just release --check        # preflight and gate only; prints the plan
 
 - Sessions are identified by Claude Code project folder name (e.g., `-Users-foo-bar-project`)
 - `default_muted: false` - new sessions speak; `claude-tts mute --all` sets it true and mutes every session, `unmute --all` reverts
-- Use `/tts-mute` and `/tts-unmute` for one session
+- Use `/tts-mute` and `/tts-unmute` for one session; `claude-tts mute|unmute --room ROOM` sets every session of one room (its owner--house--room id and its Claude folder id), named as `hold --let` names it (9.59.0)
 - Each session can have its own persona, speed, and mute state
 - A new prompt in a session drops that session's queued speech that has not started playing (hooks/prompt-submitted.sh on UserPromptSubmit runs `claude-tts supersede --from-hook`, which writes a supersede control; the playing message finishes, other sessions and the bridge are untouched; counted as `stale dropped` in `claude-tts daemon stats`)
 - Every reply a hook accepts is appended, in full and before the filter, to `~/.claude/voice-ledger/<session>.jsonl` with an id the queue message carries; the daemon appends played, cancelled, failed or dropped (with the reason) under that id in `~/.claude-tts/ledger/<session>.outcomes.jsonl`. Two files, two writers, nothing deletes from either (9.43.0). `claude-tts ledger` reads them joined; the 50-row speech ring in handy.py is for the player, this is for the record

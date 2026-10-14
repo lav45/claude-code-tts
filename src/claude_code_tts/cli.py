@@ -193,13 +193,51 @@ def cmd_config(args: argparse.Namespace) -> None:
           "claude-tts config --changed hides the ones that match.")
 
 
+def _room_sessions(room: str) -> list[str]:
+    """The session ids in sessions.d that belong to a room, matched as `hold --let` matches.
+
+    A full id, a room tag (tts) or the id's last segment; a Claude Code folder id
+    (-Users-...-claude-code-tts) belongs to the room its path ends in, since one room's
+    checkout is spoken under both its folder id and its owner--house--room id.
+    """
+    from claude_code_tts.state import lets_through
+
+    if not TTS_SESSIONS_DIR.is_dir():
+        return []
+    found = []
+    for sf in sorted(TTS_SESSIONS_DIR.glob("*.json")):
+        sid = sf.stem
+        if lets_through(sid, [room]) and not sid.startswith("-"):
+            found.append(sid)
+        elif sid.startswith("-") and (sid == room or sid.endswith(f"-{room}")):
+            found.append(sid)
+    return found
+
+
+def _set_room_muted(room: str, muted: bool) -> None:
+    """Mute or unmute every session of one room; prints each one, exit 1 when none match."""
+    sessions = _room_sessions(room)
+    if not sessions:
+        print(f"No session in {TTS_SESSIONS_DIR} belongs to room {room!r}; nothing changed")
+        print("Rooms are named as `claude-tts hold --let` names them: tts, or alice--claude--claude-code-tts")
+        sys.exit(1)
+    for sid in sessions:
+        session_set(sid, "muted", muted)
+        print(f"{'Muted' if muted else 'Unmuted'}: {sid}")
+    print(f"{len(sessions)} session(s) of room {room} {'muted' if muted else 'unmuted'}")
+
+
 def cmd_mute(args: argparse.Namespace) -> None:
-    """Mute TTS for this session or all sessions."""
+    """Mute TTS for this session, one room's sessions (--room), or all sessions."""
     config = load_raw_config()
     if not config:
         print(f"Config file not found: {TTS_CONFIG_FILE}")
         print("Run claude-tts-install first")
         sys.exit(1)
+
+    if getattr(args, "room", None):
+        _set_room_muted(args.room, True)
+        return
 
     if getattr(args, "all", False):
         config["default_muted"] = True
@@ -235,11 +273,15 @@ def cmd_mute(args: argparse.Namespace) -> None:
 
 
 def cmd_unmute(args: argparse.Namespace) -> None:
-    """Unmute TTS for this session, or every session and the default with --all."""
+    """Unmute TTS for this session, one room's sessions (--room), or every session and the default with --all."""
     if not TTS_CONFIG_FILE.exists():
         print(f"Config file not found: {TTS_CONFIG_FILE}")
         print("Run claude-tts-install first")
         sys.exit(1)
+
+    if getattr(args, "room", None):
+        _set_room_muted(args.room, False)
+        return
 
     if getattr(args, "all", False):
         config = load_raw_config()
@@ -4265,7 +4307,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- mute ---
     p = subparsers.add_parser("mute", help="Mute TTS for this session")
-    p.add_argument("--all", action="store_true", help="Mute all sessions globally")
+    who = p.add_mutually_exclusive_group()
+    who.add_argument("--all", action="store_true", help="Mute all sessions globally")
+    who.add_argument("--room", metavar="ROOM", help="Mute one room's sessions (tts, or alice--claude--claude-code-tts)")
     p.set_defaults(func=cmd_mute)
 
     # --- voices ---
@@ -4274,7 +4318,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- unmute ---
     p = subparsers.add_parser("unmute", help="Unmute TTS for this session")
-    p.add_argument("--all", action="store_true", help="Unmute every session and make new sessions speak by default")
+    who = p.add_mutually_exclusive_group()
+    who.add_argument("--all", action="store_true", help="Unmute every session and make new sessions speak by default")
+    who.add_argument("--room", metavar="ROOM", help="Unmute one room's sessions (tts, or alice--claude--claude-code-tts)")
     p.set_defaults(func=cmd_unmute)
 
     # --- speed ---
