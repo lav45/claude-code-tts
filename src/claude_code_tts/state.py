@@ -28,7 +28,6 @@ from pathlib import Path
 
 from claude_code_tts import __version__
 from claude_code_tts.config import TTS_CONFIG_DIR, atomic_write_json
-from claude_code_tts.msgqueue import NOW_LANE
 
 PID_FILE = TTS_CONFIG_DIR / "daemon.pid"
 LOCK_FILE = TTS_CONFIG_DIR / "daemon.lock"
@@ -507,27 +506,17 @@ def lets_through(session_id: str, let_through: list[str] | None) -> bool:
     return any(entry in (session_id, tag, last) for entry in let_through)
 
 
-def may_play(state: dict, session_id: str, lane: str = "", queued_at: object = None) -> bool:
+def may_play(state: dict, session_id: str) -> bool:
     """Whether a message from session_id may play under this state.
 
     Not paused: yes. A mic hold (paused_by "mic"), or a recording under a person's hold
-    (mic_held): nobody, the person is speaking. A person's hold: only the rooms let through,
-    and a "now" block queued after the hold began (a click on a page is the person asking;
-    a pause pressed during that read still stops it, since the hold is then the newer).
+    (mic_held): nobody, the person is speaking. A person's hold: only the rooms let through.
+    A "now" block is held like any other message: a hold must always be able to stop it.
     """
     if not state.get("paused"):
         return True
     if state.get("paused_by") != "user" or state.get("mic_held"):
         return False
-    if lane == NOW_LANE:
-        since = state.get("paused_since")
-        if (
-            isinstance(since, (int, float))
-            and isinstance(queued_at, (int, float))
-            and not isinstance(queued_at, bool)
-            and queued_at > since
-        ):
-            return True
     return lets_through(session_id, state.get("let_through"))
 
 

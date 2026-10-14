@@ -102,9 +102,9 @@ separate "daemon down" answer because the bridge lives inside the daemon.
   way a pause cuts it (in sentence mode, the sentence playing is cut), and resumes where it
   stopped, rewound a little, once no now block is left; then the queue goes on in order. Now
   blocks never cut each other: a second click queues behind the first (send `/stop` for the
-  page's source first to replace a read). A person's hold that began before the block was
-  queued does not hold it; a pause pressed during the read does, and a recording holds it as
-  it holds everything. Added in 9.58.0; an older bridge answers `400` for it, so a page can
+  page's source first to replace a read; it also cancels a read of that source a click cut
+  off). A hold, a pause and a recording hold a now block like any other message: it plays
+  first when the hold is released. Added in 9.58.0 (9.59.1: holds apply); an older bridge answers `400` for it, so a page can
   send it and resend without `lane` on that `400`. Any other value: `400`.
 
 Response `202`:
@@ -267,7 +267,7 @@ for a backlog nobody wants to hear. The body is ignored (send `{}` or none).
   for the daemon; `taken` false means the control is in the queue and the daemon has not acted
   on it yet (it will, before anything older plays). A message playing when the request lands
   finishes first, so a long one can make `taken` false.
-- A message the hold cut off halfway is dropped too (it is not counted in `dropped`); a message
+- A message the hold or a now block cut off halfway is dropped too (it is not counted in `dropped`); a message
   playing with no hold is not, `/stop` is for a page's own.
 - To release and drop in one step, call this, then `POST /pause` with `{"paused": false}`.
 - A bridge older than 9.56.0 answers `404`. Added additively.

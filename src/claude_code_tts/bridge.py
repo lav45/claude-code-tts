@@ -36,7 +36,7 @@ from urllib.parse import parse_qs
 
 from claude_code_tts import __version__, msgqueue
 from claude_code_tts.config import TTS_CONFIG_DIR, load_raw_config
-from claude_code_tts.state import may_play, room_tag
+from claude_code_tts.state import may_play, room_tag, write_playback_state
 
 TOKEN_FILE = TTS_CONFIG_DIR / "http-token"
 DEFAULT_PORT = 7457
@@ -653,9 +653,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             session=session,
             name=name,
         )
-        if lane == msgqueue.NOW_LANE and may_play(
-            self.server.read_playback_state(), str(msg.get("session_id", "")), lane, msg.get("timestamp")
-        ):
+        if lane == msgqueue.NOW_LANE and may_play(self.server.read_playback_state(), str(msg.get("session_id", ""))):
             # After the file is written: the loop's next scan must find what it was cut off for.
             self.server.preempt()
         self._send_json(202, {"id": msg["id"], "state": "queued"})
@@ -674,6 +672,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 # Paused between plays: nothing to kill, just forget the replay.
                 self.server.clear_current_message()
                 JOBS.update(current["id"], state="cancelled")
+            stopped_current = True
+        preempted = state.get("preempted_message") or {}
+        if preempted.get("source") == source and preempted.get("id"):
+            # Cut off by a now block and waiting to resume: a stop means it does not.
+            write_playback_state(preempted_message=None)
+            JOBS.update(preempted["id"], state="cancelled")
             stopped_current = True
         self._send_json(200, {"flushed": flushed, "stopped_current": stopped_current})
 

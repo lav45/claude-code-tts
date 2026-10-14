@@ -353,6 +353,22 @@ def test_speak_now_lane_is_written_and_tells_the_daemon(server: Bridge, tts_home
     assert calls == [1]
 
 
+def test_stop_cancels_a_read_a_click_cut_off(server: Bridge, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page's background read cut off by its own click must not resume after Stop."""
+    writes: list[dict] = []
+    monkeypatch.setattr(bridge_mod, "write_playback_state", lambda **kw: writes.append(kw))
+    JOBS.create("bg1", source="hear")
+    server.fake.state["preempted_message"] = {"id": "bg1", "source": "hear", "text": "x"}  # type: ignore[attr-defined]
+    _, body, _ = call(server, "POST", "/stop", {"source": "hear"})
+    assert body["stopped_current"] is True
+    assert writes == [{"preempted_message": None}]
+    assert JOBS.state("bg1") == "cancelled"
+    writes.clear()
+    server.fake.state["preempted_message"] = {"id": "r1", "source": "other", "text": "x"}  # type: ignore[attr-defined]
+    call(server, "POST", "/stop", {"source": "hear"})
+    assert writes == [], "another source's cut-off message is left alone"
+
+
 def test_speak_now_lane_under_a_recording_waits_without_a_cut(server: Bridge, tts_home: Path) -> None:
     calls: list[int] = []
     server._server.preempt = lambda: calls.append(1)  # type: ignore[union-attr]

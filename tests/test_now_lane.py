@@ -1,8 +1,8 @@
 """Lane "now": a block a person clicked to hear plays first, cutting off a room mid-message.
 
 The room's message resumes where it was cut once no now block is left (JMO 2026-10-13: "a
-click on hear is where his eyes are, so it speaks FIRST"). A person's hold set before the
-click does not hold the click; a pause pressed during the read, and a recording, do.
+click on hear is where his eyes are, so it speaks FIRST"). A hold holds a click like
+anything else: the one way to stop a read must never stop working.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import claude_code_tts.daemon as d
 import claude_code_tts.msgqueue as mq
 import claude_code_tts.state as st
 from claude_code_tts.bridge import JOBS, write_bridge_message
-from claude_code_tts.state import hold, may_play
+from claude_code_tts.state import hold, may_play, release
 
 
 def _m(ts: float, **extra: object) -> dict:
@@ -30,25 +30,6 @@ def _m(ts: float, **extra: object) -> dict:
 def test_now_goes_before_everything_and_keeps_its_own_order() -> None:
     msgs = [_m(1.0, type="control"), _m(2.0, lane="background"), _m(3.0), _m(4.0, lane="now"), _m(5.0, lane="now")]
     assert [x["timestamp"] for x in mq.play_order(msgs)] == [4.0, 5.0, 1.0, 3.0, 2.0]
-
-
-class TestMayPlay:
-    held = {"paused": True, "paused_by": "user", "paused_since": 100.0}
-
-    def test_a_click_after_a_persons_hold_plays(self) -> None:
-        assert may_play(self.held, "browser", "now", 101.0)
-
-    def test_a_pause_pressed_during_the_read_holds_it(self) -> None:
-        assert not may_play(self.held, "browser", "now", 99.0)
-
-    def test_a_recording_holds_it(self) -> None:
-        assert not may_play({**self.held, "paused_by": "mic"}, "browser", "now", 101.0)
-        assert not may_play({**self.held, "mic_held": True}, "browser", "now", 101.0)
-
-    def test_other_lanes_and_a_missing_stamp_wait_as_before(self) -> None:
-        assert not may_play(self.held, "browser", "background", 101.0)
-        assert not may_play(self.held, "browser", "now", None)
-        assert not may_play(self.held, "browser", "now", True)
 
 
 def _harness():
@@ -109,7 +90,7 @@ def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None):
     JOBS._jobs.clear()
     JOBS._cancel.clear()
     st.write_playback_state(paused=False, paused_by=None, audio_pid=None, current_message=None)
-    d._PREEMPT["at"] = 0.0
+    d._PREEMPT.update(asked=0, settled=0)
 
     def run() -> None:
         d._shutdown_requested = False
@@ -124,7 +105,7 @@ def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None):
         stop_loop(runner)
         for p in reversed(patches):
             p.stop()
-        d._PREEMPT["at"] = 0.0
+        d._PREEMPT.update(asked=0, settled=0)
 
     return state_dir, queue_dir, spoken, stop
 
@@ -155,19 +136,96 @@ def test_a_click_cuts_a_room_off_and_the_room_resumes_after(tmp_path: Path, unit
         assert "Replaying interrupted message from start" in log or "Resuming from" in log
     assert "Cut off alice--claude--a for a now block" in log
     assert "Resuming alice--claude--a, cut off by a now block" in log
-    assert d._PREEMPT["at"] == 0.0
+    assert not d._preempt_pending()
 
 
-def test_a_click_plays_through_a_hold_set_before_it(tmp_path: Path) -> None:
+def test_a_hold_holds_a_click_and_the_release_plays_it_first(tmp_path: Path) -> None:
+    """Review of 6c0187d: a click let through a hold could then be stopped by no pause at all."""
     state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, "sleep 0.05")
     try:
         hold([])
         time.sleep(0.05)
         _enqueue_room(queue_dir, "a room waits", "alice--claude--a")
         _click("what JMO clicked")
-        assert _wait_for(lambda: "what JMO clicked" in spoken)
-        time.sleep(0.3)
-        assert spoken == ["what JMO clicked"], "the room must wait for the hold"
-        assert st.read_playback_state()["paused"] is True
+        time.sleep(0.4)
+        assert spoken == [], "a hold holds a click like anything else"
+        assert not may_play(st.read_playback_state(), "browser")
+        release()
+        assert _wait_for(lambda: spoken == ["what JMO clicked", "a room waits"])
     finally:
         stop()
+
+
+def test_a_pause_during_a_click_stops_it_and_it_resumes_first(tmp_path: Path) -> None:
+    playing = tmp_path / "click-playing"
+    body = f'case "$*" in *browser*) echo x >> {playing}; sleep 1 ;; *) sleep 0.05 ;; esac'
+    state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, body)
+    try:
+        _click("what JMO clicked")
+        assert _wait_for(lambda: playing.exists())
+        st.set_paused(True)
+        _enqueue_room(queue_dir, "a room waits", "alice--claude--a")
+        assert _wait_for(lambda: st.read_playback_state().get("current_message", {}) and not st.read_playback_state().get("audio_pid"))
+        time.sleep(0.3)
+        assert len(playing.read_text().splitlines()) == 1, "the pause stopped the click"
+        st.set_paused(False)
+        assert _wait_for(lambda: spoken.count("what JMO clicked") == 2 and "a room waits" in spoken)
+        assert spoken.index("a room waits") > 1, "the click resumes before the room"
+    finally:
+        stop()
+
+
+def _cut_room_off(tmp_path: Path):
+    """A room playing, a click cutting it off, and the loop holding it in preempted_message."""
+    playing = tmp_path / "room-playing"
+    body = f'case "$*" in *browser*) sleep 1.5 ;; *) echo "$*" >> {playing}; sleep 1 ;; esac'
+    state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, body)
+    _enqueue_room(queue_dir, "a long room reply", "alice--claude--a")
+    assert _wait_for(lambda: playing.exists())
+    click = _click("what JMO clicked")
+    assert _wait_for(lambda: bool(st.read_playback_state().get("preempted_message")))
+    return state_dir, queue_dir, spoken, stop, click
+
+
+def test_a_drop_drops_the_message_a_click_cut_off(tmp_path: Path) -> None:
+    """Review of 6c0187d: kraken --drop and POST /queue/drop left it to resume after the click."""
+    state_dir, queue_dir, spoken, stop, _ = _cut_room_off(tmp_path)
+    try:
+        mq.write_drop_all_message([str(m["id"]) for m in mq.scan() if m.get("type") != "control"])
+        assert _wait_for(lambda: not st.read_playback_state().get("preempted_message"))
+        time.sleep(2.0)
+        assert spoken.count("a long room reply") == 1, f"a dropped message spoke again: {spoken}"
+    finally:
+        stop()
+    assert "a now block cut off is dropped too" in (state_dir / "daemon.log").read_text()
+
+
+def test_a_stale_cut_off_message_is_cleared_at_start(tmp_path: Path) -> None:
+    """Review of 6c0187d: a cold start days later spoke the old cut-off reply."""
+    loop_harness, stop_loop = _harness()
+    state_dir, queue_dir, spoken, patches = loop_harness(tmp_path, {})
+    for p in patches:
+        p.start()
+    try:
+        old = {"id": "aaaa0001", "session_id": "alice--claude--a", "project": "p", "text": "days old",
+               "audio_position": 1.0, "preempted_at": time.time() - 3 * 86400}
+        st.write_playback_state(paused=False, audio_pid=None, current_message=None, preempted_message=old)
+
+        def run() -> None:
+            d._shutdown_requested = False
+            d._daemon_mode = True
+            d.daemon_loop()
+
+        runner = threading.Thread(target=run, daemon=True)
+        runner.start()
+        try:
+            assert _wait_for(lambda: (state_dir / "daemon.heartbeat").exists())
+            time.sleep(0.3)
+            assert spoken == []
+            assert not st.read_playback_state().get("preempted_message")
+        finally:
+            stop_loop(runner)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+    assert "preempted_message" in (state_dir / "daemon.log").read_text()
