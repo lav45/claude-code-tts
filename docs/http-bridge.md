@@ -241,6 +241,28 @@ messages are grouped under their `source`; control messages are not counted.
 - `by` other than `room`: `400`. The queue is read from disk on each call; poll it at a human
   pace (once a second is plenty).
 
+### `POST /queue/drop`
+
+Drops everything queued, rooms and pages alike, and leaves the hold as it is: the Flush button
+for a backlog nobody wants to hear. The body is ignored (send `{}` or none).
+
+```json
+{"dropped": 221, "taken": true}
+```
+
+- It writes the same drop-all control as `claude-tts kraken --drop`. The daemon takes it at the
+  top of its next pass, held or not, drops exactly the messages it names (by id), writes one
+  `dropped (kraken)` outcome per hook message to the voice ledger, and settles each page job as
+  `cancelled`. Speech that arrives after the request is kept.
+- `dropped` is how many queued messages the request named. The reply waits up to five seconds
+  for the daemon; `taken` false means the control is in the queue and the daemon has not acted
+  on it yet (it will, before anything older plays). A message playing when the request lands
+  finishes first, so a long one can make `taken` false.
+- A message the hold cut off halfway is dropped too (it is not counted in `dropped`); a message
+  playing with no hold is not, `/stop` is for a page's own.
+- To release and drop in one step, call this, then `POST /pause` with `{"paused": false}`.
+- A bridge older than 9.56.0 answers `404`. Added additively.
+
 ## Mute does not apply here
 
 `muted`, `default_muted` and a session's own mute are decided by the hook before it writes a

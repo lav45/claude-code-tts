@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -429,6 +431,68 @@ def test_pause_needs_token(server: Bridge) -> None:
     status, _, _ = call(server, "POST", "/pause", {}, token=None)
     assert status == 401
     assert server.fake.state["paused"] is False  # type: ignore[attr-defined]
+
+
+def _queue_hook_message(queue: Path, msg_id: str, ts: float) -> None:
+    queue.mkdir(parents=True, exist_ok=True)
+    (queue / f"{ts}_{msg_id}.json").write_text(
+        json.dumps({"id": msg_id, "timestamp": ts, "text": msg_id, "session_id": "a--claude--tts"})
+    )
+
+
+def test_queue_drop_drops_everything_and_keeps_the_hold(server: Bridge, tts_home: Path) -> None:
+    queue = tts_home / "queue"
+    _queue_hook_message(queue, "h1", 1.0)
+    _queue_hook_message(queue, "h2", 2.0)
+    page = write_bridge_message("page", persona="p", persona_config={}, source="hear")
+    server.fake.state.update(paused=True, paused_by="user")  # type: ignore[attr-defined]
+    removed: list[str] = []
+    stop = threading.Event()
+
+    def daemon_pass() -> None:
+        # The daemon's own step: drop-all controls are taken at the top of every pass.
+        while not stop.is_set():
+            mq.apply_drop_all(mq.scan(), on_removed=lambda m: removed.append(str(m["id"])))
+            time.sleep(0.02)
+
+    t = threading.Thread(target=daemon_pass)
+    t.start()
+    try:
+        status, body, _ = call(server, "POST", "/queue/drop")
+    finally:
+        stop.set()
+        t.join()
+    assert status == 200
+    assert body == {"dropped": 3, "taken": True}
+    assert sorted(removed) == sorted(["h1", "h2", page["id"]])
+    assert list(queue.glob("*.json")) == []
+    assert server.fake.state["paused"] is True  # type: ignore[attr-defined]
+
+
+def test_queue_drop_without_a_daemon_leaves_the_control_waiting(
+    server: Bridge, tts_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridge_mod, "DROP_WAIT_S", 0.1)
+    _queue_hook_message(tts_home / "queue", "h1", 1.0)
+    status, body, _ = call(server, "POST", "/queue/drop", {})
+    assert status == 200
+    assert body == {"dropped": 1, "taken": False}
+    controls = [m for m in mq.scan() if mq.is_drop_all(m)]
+    assert [c["drop_ids"] for c in controls] == [["h1"]]
+
+
+def test_queue_drop_on_an_empty_queue_writes_nothing(server: Bridge, tts_home: Path) -> None:
+    status, body, _ = call(server, "POST", "/queue/drop")
+    assert status == 200
+    assert body == {"dropped": 0, "taken": True}
+    assert mq.scan() == []
+
+
+def test_queue_drop_needs_token(server: Bridge, tts_home: Path) -> None:
+    _queue_hook_message(tts_home / "queue", "h1", 1.0)
+    status, _, _ = call(server, "POST", "/queue/drop", token=None)
+    assert status == 401
+    assert [m["id"] for m in mq.scan()] == ["h1"]
 
 
 def test_flush_source_direct(tts_home: Path) -> None:

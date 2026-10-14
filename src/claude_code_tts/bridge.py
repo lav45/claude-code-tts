@@ -44,6 +44,7 @@ DEFAULT_BIND = "127.0.0.1"
 JOB_TTL_SECONDS = 300
 MAX_BODY_BYTES = 256 * 1024
 DEFAULT_MAX_CHARS = 10000
+DROP_WAIT_S = 5.0
 
 JOB_STATES = ("queued", "synthesizing", "playing", "paused", "done", "cancelled", "failed")
 
@@ -464,7 +465,8 @@ class BridgeHTTPServer(ThreadingHTTPServer):
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
-    server: BridgeHTTPServer
+    # Narrowed for the reader: BridgeHTTPServer is the only server this handler is built by.
+    server: BridgeHTTPServer  # ty: ignore[invalid-mutable-override]
     protocol_version = "HTTP/1.1"
 
     # -- plumbing --
@@ -602,6 +604,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._stop(body)
         elif path == "/pause":
             self._pause(body)
+        elif path == "/queue/drop":
+            self._drop()
         else:
             self._send_json(404, {"error": "no such route"})
 
@@ -664,6 +668,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 JOBS.update(current["id"], state="cancelled")
             stopped_current = True
         self._send_json(200, {"flushed": flushed, "stopped_current": stopped_current})
+
+    def _drop(self) -> None:
+        """Drop every message queued, from rooms and pages alike; the hold stays as it is.
+
+        The same drop-all control `claude-tts kraken --drop` writes: the daemon takes it at the
+        top of its next pass, held or not, and writes one `dropped (kraken)` ledger outcome per
+        hook message. The reply waits up to DROP_WAIT_S for that; `taken` false means the
+        control is in the queue and the daemon has not acted on it yet.
+        """
+        ids = [str(m["id"]) for m in msgqueue.scan() if m.get("type") != "control" and m.get("id")]
+        taken = True
+        if ids:
+            control = msgqueue.write_drop_all_message(ids)
+            deadline = time.monotonic() + DROP_WAIT_S
+            while control.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            taken = not control.exists()
+        self.server.log_fn(f"Bridge asked to drop {len(ids)} queued message(s)")
+        self._send_json(200, {"dropped": len(ids), "taken": taken})
 
     def _pause(self, body: dict) -> None:
         """Hold or release the whole queue. No "paused" in the body toggles.
