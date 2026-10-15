@@ -2141,6 +2141,8 @@ def daemon_loop(lockpick: bool = False) -> None:
                         )
                         clear_current_message()
                         audio_file.unlink(missing_ok=True)
+                        _outcome(interrupted, "played", played_s=round(prev_audio_pos, 1), near_end=True)
+                        JOBS.update(i_job_id, state="done")
                         continue
 
                     # Resume with rewind (scaled to playback speed)
@@ -2461,7 +2463,10 @@ def daemon_loop(lockpick: bool = False) -> None:
         except Exception as e:
             log(f"Error in daemon loop: {e}", "ERROR")
             if unplayed_claim is not None:
-                unplayed_claim.release()  # the file is still queued; the next pass plays it
+                # Never played, and its file is still queued: the next pass plays it from there,
+                # so the on-deck copy (written before synthesis) must not replay it as well.
+                clear_current_message()
+                unplayed_claim.release()
             time.sleep(1)
 
     prefetch.discard()  # a synthesis for a message nobody will play now; its WAV goes too

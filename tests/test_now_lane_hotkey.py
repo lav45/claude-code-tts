@@ -119,3 +119,78 @@ def test_a_stop_for_the_read_on_deck_at_start_drops_it(tmp_path: Path) -> None:
     finally:
         for p in reversed(patches):
             p.stop()
+
+
+# From the review of cdb600b: the message on deck before synthesis, and the woken held pass.
+
+
+def _wav(path: Path, frames: int = 800) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * frames)
+
+
+
+def test_a_synthesis_that_raises_does_not_play_the_message_twice(tmp_path: Path) -> None:
+    """current_message is on deck before synthesis; the except branch releases the claim and leaves it."""
+    plays = tmp_path / "plays"
+    state_dir, queue_dir, spoken, stop = nl._run_loop(
+        tmp_path, f'echo x >> {plays}; sleep 0.05', {"speech_unit": "message"}
+    )
+    calls = {"n": 0}
+
+    def flaky(text, persona, output_file, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("engine fell over")
+        _wav(output_file)
+        return True
+
+    p = patch.object(d, "daemon_generate_speech", side_effect=flaky)
+    p.start()
+    try:
+        nl._enqueue_room(queue_dir, "one room reply", "alice--claude--a")
+        assert nl._wait_for(lambda: plays.exists(), timeout=6)
+        time.sleep(2.5)
+        n = len(plays.read_text().splitlines())
+        assert n == 1, f"played {n} times; synth calls {calls['n']}"
+        assert not st.read_playback_state().get("current_message")
+    finally:
+        p.stop()
+        stop()
+
+
+def test_a_held_room_on_deck_stays_held(tmp_path: Path) -> None:
+    """The woken held pass must not play an on-deck message the hold keeps."""
+    plays = tmp_path / "plays"
+    state_dir, queue_dir, spoken, stop = nl._run_loop(tmp_path, f'echo x >> {plays}; sleep 0.05')
+    try:
+        hold([])
+        st.write_playback_state(current_message={
+            "id": "r1", "session_id": "bob--claude--b", "project": "b", "text": "held room",
+            "audio_position": 0.5, "timestamp": time.time() - 5,
+        })
+        time.sleep(1.0)
+        assert not plays.exists()
+        assert st.read_playback_state().get("current_message", {}).get("id") == "r1"
+    finally:
+        stop()
+
+
+def test_a_let_through_room_on_deck_resumes_once_under_the_hold(tmp_path: Path) -> None:
+    plays = tmp_path / "plays"
+    state_dir, queue_dir, spoken, stop = nl._run_loop(tmp_path, f'echo x >> {plays}; sleep 0.05')
+    try:
+        hold(["alice--claude--a"])
+        st.write_playback_state(current_message={
+            "id": "r1", "session_id": "alice--claude--a", "project": "a", "text": "let room",
+            "audio_position": 0.5, "timestamp": time.time() - 5,
+        })
+        assert nl._wait_for(lambda: plays.exists())
+        time.sleep(1.0)
+        assert len(plays.read_text().splitlines()) == 1
+        assert st.read_playback_state()["paused"] is True
+    finally:
+        stop()
