@@ -632,8 +632,21 @@ def _persona_edit(args: argparse.Namespace, config: dict, sid: str) -> None:
         if args.speaker is not None:
             entry["speaker_sherpa"] = args.speaker
     elif args.speaker is not None:
-        print("--speaker applies to a sherpa model; give --sherpa MODEL with it")
-        sys.exit(2)
+        if not args.voice:
+            print("--speaker picks a voice inside a multi-speaker model; give --voice MODEL or --sherpa MODEL with it")
+            sys.exit(2)
+        if args.speaker < 0:
+            print(f"--speaker is a speaker id, 0 or more: {args.speaker}")
+            sys.exit(2)
+        meta_path = VOICES_DIR / f"{entry['voice']}.onnx.json"
+        try:
+            num_speakers = int(json.loads(meta_path.read_text()).get("num_speakers", 1))
+        except (OSError, ValueError, AttributeError):
+            num_speakers = 0  # model not installed here; the daemon's machine may have it
+        if num_speakers and args.speaker >= num_speakers:
+            print(f"{entry['voice']} has {num_speakers} speaker(s), ids 0-{num_speakers - 1}: {args.speaker}")
+            sys.exit(2)
+        entry["speaker_piper"] = args.speaker
     if args.mlx:
         from claude_code_tts.mlx_catalog import CATALOG, default_lang_for, resolve_model
         entry["voice_mlx"] = resolve_model(args.mlx)
@@ -2100,7 +2113,7 @@ def cmd_speak(args: argparse.Namespace) -> None:
     lang_mlx = cfg.lang_mlx
     speed = cfg.speed
     speed_method = cfg.speed_method or "playback"
-    speaker = None
+    speaker = cfg.speaker_piper if cfg.speaker_piper >= 0 else None
 
     # CLI overrides for mlx take precedence and disable other backends for
     # this one-shot call; a catalog id resolves to its Hugging Face repo.
@@ -2135,6 +2148,7 @@ def cmd_speak(args: argparse.Namespace) -> None:
 
     if args.voice:
         voice_path = VOICES_DIR / f"{args.voice}.onnx"
+        speaker = None  # the persona's speaker id names a voice in its own model, not this one
         voice_kokoro = ""
         voice_kokoro_blend = ""
         voice_sherpa = ""
@@ -4354,7 +4368,8 @@ def main(argv: list[str] | None = None) -> None:
     p = subparsers.add_parser(
         "persona",
         help="Show, set, add or remove voice personas",
-        epilog="Examples: persona add house-geordi --voice en_GB-alan-medium --speed 2.0 --project;  persona remove old-name",
+        epilog="Examples: persona add house-geordi --voice en_GB-alan-medium --speed 2.0 --project;  "
+        "persona add wayland --voice en_GB-vctk-medium --speaker 12 --project;  persona remove old-name",
     )
     p.add_argument("name", nargs="?", help="Persona name, 'reset', 'add' or 'remove'")
     p.add_argument("target", nargs="?", help="With add or remove: the persona to add or remove")
@@ -4363,7 +4378,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--voice", metavar="MODEL", help="add: Piper voice model, e.g. en_GB-alan-medium")
     p.add_argument("--kokoro", metavar="VOICE", help="add: Kokoro voice for swift-kokoro, e.g. af_heart")
     p.add_argument("--sherpa", metavar="MODEL", help="add: sherpa-onnx model dir name under ~/.claude-tts/sherpa-models")
-    p.add_argument("--speaker", type=int, help="add: speaker id in a multi-speaker sherpa model")
+    p.add_argument("--speaker", type=int, help="add: speaker id in a multi-speaker model, the --sherpa one or else the Piper --voice")
     p.add_argument("--mlx", metavar="MODEL", help="add: mlx-audio model, a catalog id (kokoro) or Hugging Face repo")
     p.add_argument("--mlx-voice", metavar="NAME", help="add: voice preset for the mlx model, e.g. af_heart")
     p.add_argument("--mlx-lang", metavar="CODE", help="add: language code for the mlx model, e.g. a (Kokoro American)")

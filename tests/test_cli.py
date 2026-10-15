@@ -258,6 +258,26 @@ class TestPersonaAddRemove:
         assert personas["s"]["voice_sherpa"] == "vctk-vits"
         assert personas["s"]["speaker_sherpa"] == 42
 
+    def test_add_speaker_without_sherpa_is_the_piper_speaker(self, tts_home, patched_env):
+        main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "12"])
+        entry = self._config(tts_home)["personas"]["w"]
+        assert (entry["voice"], entry["speaker_piper"]) == ("en_GB-vctk-medium", 12)
+        assert "speaker_sherpa" not in entry
+
+    def test_add_refuses_a_speaker_the_installed_model_lacks(self, tts_home, patched_env, capsys, monkeypatch, tmp_path):
+        voices = tmp_path / "voices"
+        voices.mkdir()
+        (voices / "en_GB-vctk-medium.onnx.json").write_text(json.dumps({"num_speakers": 109}))
+        monkeypatch.setattr("claude_code_tts.cli.VOICES_DIR", voices)
+        with pytest.raises(SystemExit) as exc:
+            main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "109"])
+        assert exc.value.code == 2
+        assert "109 speaker(s), ids 0-108" in capsys.readouterr().out
+        assert "w" not in self._config(tts_home).get("personas", {})
+        with pytest.raises(SystemExit) as exc:
+            main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "-1"])
+        assert exc.value.code == 2
+
     def test_add_refuses_to_overwrite_without_force(self, tts_home, patched_env, capsys):
         with pytest.raises(SystemExit) as exc:
             main(["persona", "add", "claude-chill", "--voice", "en_US-joe-medium"])

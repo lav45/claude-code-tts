@@ -416,6 +416,8 @@ AVAILABLE_VOICES = [
     ("en_GB-northern_english_male-medium", "male", "medium", "Northern English Male - Yorkshire accent", "en/en_GB/northern_english_male/medium"),
     ("en_GB-alba-medium", "female", "medium", "Alba - Scottish female", "en/en_GB/alba/medium"),
     ("en_GB-jenny_dioco-medium", "female", "medium", "Jenny - British female", "en/en_GB/jenny_dioco/medium"),
+    # Multi-speaker: pick one with `claude-tts audition --voice NAME --speakers N`, keep it with persona add --speaker
+    ("en_GB-vctk-medium", "mixed", "medium", "VCTK - 109 British and Irish speakers (CC-BY-4.0 data)", "en/en_GB/vctk/medium"),
 ]
 
 

@@ -49,7 +49,8 @@ process it ran under; `<host>` is the machine's short host name with the same da
   playback, and the card does not know that.
 - `voice`: the engine's own name for the voice. Kokoro: the voice or blend string. mlx: the
   model id, then `:` and the speaker preset when one is set. Sherpa: the model directory name,
-  then `:` and the speaker number when one is set. Piper: the model name.
+  then `:` and the speaker number when one is set. Piper: the model name, then `:` and the
+  speaker number when the persona sets `speaker_piper`.
 - `speed`: the effective speed after session and environment overrides.
 - `muted`, `intermediate`, `mode`: the session's effective values.
 - `written_at`: UTC, second precision. `claude_tts`: the version that wrote it.

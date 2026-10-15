@@ -97,6 +97,8 @@ class TTSConfig:
     speed: float = 2.0
     speed_method: str = ""
     voice: str = "en_US-hfc_male-medium"
+    # The speaker id in a multi-speaker Piper model (vctk 109, libritts_r 904); -1 = the model's own.
+    speaker_piper: int = -1
     voice_kokoro: str = ""
     voice_kokoro_blend: str = ""
     # Sherpa-onnx backend (additive, opt-in per persona).
@@ -242,7 +244,8 @@ def voice_card(cfg: TTSConfig) -> dict:
         backend = "sherpa"
         voice = f"{cfg.voice_sherpa}:{cfg.speaker_sherpa}" if cfg.speaker_sherpa >= 0 else cfg.voice_sherpa
     else:
-        backend, voice = "piper", cfg.voice
+        backend = "piper"
+        voice = f"{cfg.voice}:{cfg.speaker_piper}" if cfg.speaker_piper >= 0 else cfg.voice
     return {
         "schema": VOICE_CARD_SCHEMA,
         "session": cfg.session_id,
@@ -393,6 +396,7 @@ def load_config(session_id: str | None = None) -> TTSConfig:
         cfg.speed = float(persona.get("speed", 2.0))
         cfg.speed_method = persona.get("speed_method", "")
         cfg.voice = persona.get("voice", "en_US-hfc_male-medium")
+        cfg.speaker_piper = int(persona.get("speaker_piper", -1))
         cfg.max_chars = int(persona.get("max_chars", 10000))
         cfg.voice_kokoro = persona.get("voice_kokoro", "")
         cfg.voice_kokoro_blend = persona.get("voice_kokoro_blend", "")

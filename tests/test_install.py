@@ -41,7 +41,7 @@ class TestVoiceList:
             assert len(voice) == 5, f"Voice tuple should have 5 elements: {voice}"
             name, gender, quality, desc, path = voice
             assert isinstance(name, str)
-            assert gender in ("male", "female")
+            assert gender in ("male", "female", "mixed")
             assert quality in ("low", "medium", "high")
             assert isinstance(desc, str)
             assert isinstance(path, str)

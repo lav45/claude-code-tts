@@ -173,7 +173,10 @@ def describe_voice(
         speaker = int(persona_config.get("speaker_sherpa", -1))
         return f"sherpa:{sherpa}" + (f"#{speaker}" if speaker >= 0 else "")
     voice, fell_back = resolve_piper_voice(persona, persona_config)
-    return f"{voice} (fallback)" if fell_back else voice
+    if fell_back:
+        return f"{voice} (fallback)"
+    speaker = int(persona_config.get("speaker_piper", -1))
+    return f"{voice}#{speaker}" if speaker >= 0 else voice
 
 
 # Global state
@@ -664,9 +667,12 @@ def _generate_speech_unleveled(
         )
         kokoro_voice = kokoro_blend = voice_sherpa = ""
     pitch_filter = persona_config.get("pitch_filter", "")
-    voice_name, _ = resolve_piper_voice(
+    voice_name, fell_back = resolve_piper_voice(
         persona, persona_config, other_engine=bool(voice_sherpa or voice_mlx or kokoro_voice)
     )
+    # A speaker id belongs to the persona's own model; the default standing in has no such speaker.
+    speaker_piper = int(persona_config.get("speaker_piper", -1))
+    piper_speaker = speaker_piper if speaker_piper >= 0 and not fell_back else None
     voice_path = VOICES_DIR / f"{voice_name}.onnx"
 
     # Tone-aware generation parameters.
@@ -690,6 +696,7 @@ def _generate_speech_unleveled(
         lang_mlx=lang_mlx,
         speed=speed,
         speed_method=speed_method,
+        speaker=piper_speaker,
         output_path=output_file,
         pitch_filter=pitch_filter,
         **tone_kwargs,

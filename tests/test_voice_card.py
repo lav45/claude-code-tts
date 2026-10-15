@@ -84,6 +84,12 @@ class TestFields:
         load_config("-Users-dev-c")
         assert _card("-Users-dev-c")["voice"] == "vctk-vits:42"
 
+    def test_piper_carries_its_speaker(self, tts_home):
+        _config(tts_home, {"claude-prime": {"voice": "en_GB-vctk-medium", "speaker_piper": 12}})
+        cfg = load_config("-Users-dev-e")
+        assert cfg.speaker_piper == 12
+        assert (_card("-Users-dev-e")["backend"], _card("-Users-dev-e")["voice"]) == ("piper", "en_GB-vctk-medium:12")
+
     def test_the_session_file_overrides_show_in_the_card(self, tts_home):
         _config(tts_home, {"claude-prime": {"voice": "en_US-amy-medium", "speed": 2.0}})
         (tts_home / "sessions.d").mkdir()
