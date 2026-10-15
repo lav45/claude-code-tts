@@ -77,7 +77,7 @@ claude-tts-install
 
 # Upgrade the machine that owns the daemon from this checkout: rebuild CLI, deploy
 # hooks/commands, restart the daemon, verify; full log per run in .logs/just/ (gitignored)
-just up
+just up                       # refuses a tree with uncommitted changes; just up --dirty installs it anyway
 just timeline                 # the runs so far, with version and git ref
 # Without just: uv tool install . --force --build && claude-tts-install --upgrade
 # (--build is needed where a uv config disables source builds; harmless elsewhere)

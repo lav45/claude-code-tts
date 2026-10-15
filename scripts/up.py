@@ -224,9 +224,10 @@ def announce(ver: str) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if_changed = "--if-changed" in args
-    unknown = [a for a in args if a != "--if-changed"]
+    allow_dirty = "--dirty" in args
+    unknown = [a for a in args if a not in ("--if-changed", "--dirty")]
     if unknown:
-        print(f"up: unknown argument(s): {' '.join(unknown)} (only --if-changed)", file=sys.stderr)
+        print(f"up: unknown argument(s): {' '.join(unknown)} (only --if-changed, --dirty)", file=sys.stderr)
         return 2
     # uv installs tools into ~/.local/bin, which a launchd or cron PATH does not have.
     # The run must not depend on who launched it, so put it first ourselves.
@@ -278,6 +279,14 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(f"{stamp()} {ident} held ({hold})\n")
             print(f"up: holding, {hold}")
             return 0
+    elif not allow_dirty and git("status", "--porcelain") not in ("", "unknown"):
+        # A plain run by hand on a tree someone is still editing (a sandbox shares this
+        # checkout) put half-done work on the daemon on 2026-10-15; it asks for --dirty now.
+        why = not_released(ver) or "working tree has uncommitted changes"
+        with timeline.open("a") as f:
+            f.write(f"{stamp()} {ident} refused ({why})\n")
+        print(f"up: not installing, {why}; `just up --dirty` installs it anyway", file=sys.stderr)
+        return 1
 
     print(f"up: v{ver} {ref} ({branch}) -> {run}")
     # --build: some uv configs refuse to build source distributions; harmless elsewhere.
@@ -310,7 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         f"bridge={config_flag(['http', 'enabled'])} mic={config_flag(['mic_aware_pause'])} "
         f"took={int(time.time() - started)}s run={run.name}"
     )
-    if daemon == "running":
+    # The shared ledger tells other machines to pull v<ver>: only a release has that tag.
+    if daemon == "running" and not_released(ver) is None:
         ledger = announce(ver)
         if ledger:
             with run.open("a") as f:
