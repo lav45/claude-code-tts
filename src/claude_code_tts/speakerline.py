@@ -108,4 +108,17 @@ def speak_line(msg: dict, entries: object) -> Spoken:
             skipped.append(f"{label}: say names {', '.join(missing)}, which the match does not give")
             continue
         return Spoken(_fill(rule["say"], values), label, groups, skipped)
-    return Spoken(f"{own_name or project or 'unknown'} says:", "", {}, skipped)
+    return Spoken(f"{own_name or _page_label(msg) or project or 'unknown'} says:", "", {}, skipped)
+
+
+def _page_label(msg: dict) -> str:
+    """A page's own label when it spoke for no session: "Codex" of project "codex-tts:Codex".
+
+    The bridge names such a message "<source>:<label>"; the source is the page's plumbing, the
+    label is who is talking, so "codex-tts:Codex says" is spoken as "Codex says".
+    """
+    source = str(msg.get("source") or "")
+    project = str(msg.get("project") or "")
+    if str(msg.get("session_id") or "") != "browser" or not source:
+        return ""
+    return project.removeprefix(f"{source}:") if project.startswith(f"{source}:") else ""

@@ -55,7 +55,7 @@ override it for the ids they match.
   are inserted as they are and never read as placeholders themselves. No other formatting.
 - `name`: the session's stored name, else the rule's `default_name`, else the project, else
   `unknown`.
-- No rule matches: `"<name or project or 'unknown'> says:"`.
+- No rule matches: `"<name or project or 'unknown'> says:"`. A page that sent no session (`session_id` "browser") says its label, not its source: project `codex-tts:Codex` is "Codex says:" (9.61.0).
 - Session ids: Claude Code project folder ids start with `-` (an absolute path with `/` and `.`
   replaced). Ids you set through `CLAUDE_TTS_SESSION` are yours to shape. The `rooms` set never
   matches an id that starts with `-`.

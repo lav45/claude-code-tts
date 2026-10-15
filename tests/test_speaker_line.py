@@ -63,6 +63,14 @@ class TestTheRoomsRuleSet:
     def test_a_project_folder_with_a_double_dash_is_not_a_room(self, sid):
         assert rooms({"session_id": sid, "project": sid}) == f"{sid} says:"
 
+    def test_a_page_with_no_session_says_its_label_not_its_source(self):
+        """JMO 10-15: 'Still hearing "codex-tts codex says"'; the source is plumbing."""
+        msg = {"session_id": "browser", "source": "codex-tts", "project": "codex-tts:Codex"}
+        assert rooms(msg) == "Codex says:"
+        assert rooms({**msg, "name": "Aster"}) == "Aster says:"
+        assert rooms({"session_id": "browser", "source": "hear", "project": "hear"}) == "hear says:"
+        assert rooms({"session_id": "x--y", "source": "s", "project": "s:L"}) != "L says:"
+
     def test_blank_name_is_no_name(self):
         assert rooms({"session_id": "a--h--r", "name": "   "}) == "Friend of house h in room r"
 
