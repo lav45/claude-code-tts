@@ -257,7 +257,9 @@ git add -A && git commit -m "docs: update README"
 Then push: `git push`. To publish a release, `just release` (or `claude-tts release`): it runs the
 gate, creates a signed annotated tag `v<version>` on HEAD whose subject is `v<version> - <summary>` and
 whose body is the commit body (trailers dropped), pushes main and the tag, and waits for `release.yml`
-to publish. `--notes "summary\nbody"` overrides the text, `--check` rehearses. Do not hand-roll tags.
+to publish. It refuses unless the `ci` run for HEAD's exact commit on GitHub completed with success,
+so push main and let ci finish first (9.62.0). `--notes "summary\nbody"` overrides the text,
+`--check` rehearses. Do not hand-roll tags.
 
 **Why this matters:** The version must reflect the exact state of the repo. Every commit changes the repo, so every commit needs a version bump.
 
