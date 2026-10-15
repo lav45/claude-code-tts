@@ -1869,8 +1869,13 @@ def daemon_loop(lockpick: bool = False) -> None:
         if time.time() - cut_at > RESUME_AFTER_RESTART_S:
             stale_fields.append("preempted_message")
     if startup_state.get("stop_read"):
-        # A stop for a read the previous daemon played; no job here carries that id.
+        # A stop for a read the previous daemon played; no job here carries that id. When it
+        # names the message on deck, the person asked for that read to end: it does not resume.
         stale_fields.append("stop_read")
+        on_deck = startup_state.get("current_message")
+        if isinstance(on_deck, dict) and on_deck.get("id") == startup_state["stop_read"]:
+            if "current_message" not in stale_fields:
+                stale_fields.append("current_message")
     if stale_fields:
         write_playback_state(
             audio_pid=None,
@@ -2015,7 +2020,11 @@ def daemon_loop(lockpick: bool = False) -> None:
                     continue
                 scanned = drop_all_requested(get_queue_messages())
                 allowed = [m for m in scanned if _may_play(state, m)]
-                if not allowed:
+                # A message cut off on deck that the hold lets play (a click a recording paused,
+                # a room let through) resumes with nothing queued; else it waits for a release.
+                on_deck_msg = state.get("current_message")
+                on_deck_may = isinstance(on_deck_msg, dict) and _may_play(state, on_deck_msg)
+                if not allowed and not on_deck_may:
                     time.sleep(poll_interval)
                     continue
                 letting_through = True
@@ -2305,9 +2314,13 @@ def daemon_loop(lockpick: bool = False) -> None:
                     "WARN",
                 )
                 prefetched = False
+            # On deck before synthesis, as stream_message does: a hotkey press during it must
+            # find the click it is stopping (state.click_read_through_hold), not release all.
+            write_playback_state(current_message=current_msg_info)
             if not prefetched:
                 if not JOBS.update_live(job_id, state="synthesizing"):
                     log(f"Cancelled by bridge before speaking: {project}")
+                    clear_current_message()
                     msg_file.unlink(missing_ok=True)
                     continue
                 ok, marks = synthesize_prepared(p)
@@ -2316,6 +2329,7 @@ def daemon_loop(lockpick: bool = False) -> None:
                     f"Failed to generate speech for message from {project}: {audio_last_error()}",
                     "ERROR",
                 )
+                clear_current_message()
                 audio_file.unlink(missing_ok=True)
                 msg_file.unlink(missing_ok=True)
                 unplayed_claim = None
@@ -2332,6 +2346,7 @@ def daemon_loop(lockpick: bool = False) -> None:
             if JOBS.state(job_id) == "cancelled":
                 # Stopped while it synthesized; a pause now must not revive it.
                 log(f"Cancelled by bridge before speaking: {project}")
+                clear_current_message()
                 audio_file.unlink(missing_ok=True)
                 msg_file.unlink(missing_ok=True)
                 continue
