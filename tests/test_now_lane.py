@@ -103,7 +103,7 @@ def _click(text: str) -> dict:
     return msg
 
 
-def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None):
+def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None, click_s: float = 0.1):
     loop_harness, stop_loop = _harness()
     state_dir, queue_dir, spoken, patches = loop_harness(tmp_path, raw_config or {})
     player = tmp_path / "fake-player"
@@ -111,7 +111,8 @@ def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None):
     player.chmod(0o755)
     def generate(text, persona, output_file, **kw):
         # Room speech is 6 s of WAV, so a cut early in it is far from the near-end skip
-        # (NEAR_END_THRESHOLD) and the resume really plays; a click is a short block.
+        # (NEAR_END_THRESHOLD) and the resume really plays; a click is click_s long,
+        # a short block unless the test cuts it and needs it resumed.
         spoken.append(text)
         import wave
 
@@ -119,7 +120,7 @@ def _run_loop(tmp_path: Path, player_body: str, raw_config: dict | None = None):
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(8000)
-            w.writeframes(b"\x00\x00" * (800 if "clicked" in text else 48000))
+            w.writeframes(b"\x00\x00" * (int(8000 * click_s) if "clicked" in text else 48000))
         return True
 
     patches.append(patch.object(d, "daemon_generate_speech", side_effect=generate))
@@ -229,10 +230,15 @@ def test_the_hotkey_during_a_click_through_a_hold_stops_only_that_read(tmp_path:
 def test_a_pause_during_a_click_stops_it_and_it_resumes_first(tmp_path: Path) -> None:
     playing = tmp_path / "click-playing"
     body = f'case "$*" in *browser*) echo x >> {playing}; sleep 1 ;; *) sleep 0.05 ;; esac'
-    state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, body)
+    # The click is longer than NEAR_END_THRESHOLD, so a pause during it resumes it. With
+    # 0.1 s of audio, a pause seen after BARELY_STARTED_S counted the click as played to
+    # its end and dropped it: a slow macOS runner did, Linux did not.
+    state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, body, click_s=6.0)
     try:
         _click("what JMO clicked")
         assert _wait_for(lambda: playing.exists())
+        # Land the pause late on every runner, the way a slow one does.
+        time.sleep(0.2)
         st.set_paused(True)
         _enqueue_room(queue_dir, "a room waits", "alice--claude--a")
         assert _wait_for(lambda: st.read_playback_state().get("current_message", {}) and not st.read_playback_state().get("audio_pid"))

@@ -55,6 +55,37 @@ def test_a_press_during_the_clicks_synthesis_keeps_the_hold(tmp_path: Path, unit
         stop()
 
 
+@pytest.mark.parametrize("unit", ["message", "sentence"])
+def test_a_press_the_moment_the_click_starts_synthesizing_keeps_the_hold(tmp_path: Path, unit: str) -> None:
+    """The press lands right after the job turns "synthesizing": the click must be on deck
+    by then. Sentence mode named it current only after, and the press released every room
+    (the test above caught that once under a loaded full suite)."""
+    state_dir, queue_dir, spoken, stop = nl._run_loop(tmp_path, "sleep 0.5", {"speech_unit": unit})
+    real = JOBS.update_live
+
+    def press_after(job_id, **fields):
+        ok = real(job_id, **fields)
+        if fields.get("state") == "synthesizing" and job_id:
+            nl._pause_hotkey()
+        return ok
+
+    p = patch.object(JOBS, "update_live", side_effect=press_after)
+    p.start()
+    try:
+        hold([])
+        time.sleep(0.05)
+        nl._enqueue_room(queue_dir, "a room waits", "alice--claude--a")
+        click = nl._click("what JMO clicked")
+        assert nl._wait_for(lambda: JOBS.state(click["id"]) == "cancelled")
+        state = st.read_playback_state()
+        assert state.get("paused") is True, f"the press released every room: {state}"
+        time.sleep(0.3)
+        assert "a room waits" not in spoken
+    finally:
+        p.stop()
+        stop()
+
+
 def test_a_click_a_recording_paused_resumes_and_a_press_stops_it(tmp_path: Path) -> None:
     playing = tmp_path / "click-playing"
     body = f'case "$*" in *browser*) echo x >> {playing}; sleep 3 ;; *) sleep 0.05 ;; esac'

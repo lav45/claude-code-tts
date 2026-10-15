@@ -1076,14 +1076,17 @@ def stream_message(
 
     msg_info = dict(msg_info)
     msg_info["sentence_index"] = start_index
-    # Before current_message names it: a /stop that cannot see it as current
-    # flushes its queue file and marks it cancelled, and that must stand.
+    # On deck before the job reads "synthesizing", as the whole-message path does: a hotkey
+    # press that sees the job synthesizing must find the click it stops
+    # (state.click_read_through_hold), not release every room. A /stop in between sees it
+    # current with no player, clears it and marks it cancelled, and update_live refuses.
+    write_playback_state(current_message=msg_info)
     if not JOBS.update_live(job_id, state="synthesizing", speed=speed):
         log(f"Cancelled by bridge before speaking: {project}")
+        clear_current_message()
         if msg_file is not None:
             msg_file.unlink(missing_ok=True)
         return
-    write_playback_state(current_message=msg_info)
     if start_index:
         log(f"Resuming at sentence {start_index + 1}/{n}: {sentences[start_index][:50]}...")
 
@@ -2316,7 +2319,7 @@ def daemon_loop(lockpick: bool = False) -> None:
                     "WARN",
                 )
                 prefetched = False
-            # On deck before synthesis, as stream_message does: a hotkey press during it must
+            # On deck before synthesis, as in stream_message: a hotkey press during it must
             # find the click it is stopping (state.click_read_through_hold), not release all.
             write_playback_state(current_message=current_msg_info)
             if not prefetched:

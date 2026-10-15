@@ -60,7 +60,7 @@ def counting_player(tmp_path: Path, durations: list[float], then: float = 30.0) 
     cases = "".join(f"  {k + 1}) exec sleep {sec} ;;\n" for k, sec in enumerate(durations))
     script = tmp_path / "counting-player"
     script.write_text(
-        f"#!/bin/bash\necho started >> {starts}\nn=$(wc -l < {starts})\n"
+        f"#!/bin/bash\necho started >> {starts}\nn=$(( $(wc -l < {starts}) ))\n"
         f"case $n in\n{cases}  *) exec sleep {then} ;;\nesac\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
