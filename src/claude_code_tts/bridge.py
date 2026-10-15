@@ -36,7 +36,13 @@ from urllib.parse import parse_qs
 
 from claude_code_tts import __version__, msgqueue
 from claude_code_tts.config import TTS_CONFIG_DIR, load_raw_config
-from claude_code_tts.state import may_play, room_tag, write_playback_state
+from claude_code_tts.state import (
+    click_read_through_hold,
+    may_play,
+    room_tag,
+    stop_read,
+    write_playback_state,
+)
 
 TOKEN_FILE = TTS_CONFIG_DIR / "http-token"
 DEFAULT_PORT = 7457
@@ -653,7 +659,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             session=session,
             name=name,
         )
-        if lane == msgqueue.NOW_LANE and may_play(self.server.read_playback_state(), str(msg.get("session_id", ""))):
+        if lane == msgqueue.NOW_LANE and may_play(
+            self.server.read_playback_state(), str(msg.get("session_id", "")), lane, msg.get("timestamp")
+        ):
             # After the file is written: the loop's next scan must find what it was cut off for.
             self.server.preempt()
         self._send_json(202, {"id": msg["id"], "state": "queued"})
@@ -704,11 +712,22 @@ class BridgeHandler(BaseHTTPRequestHandler):
         """Hold or release the whole queue. No "paused" in the body toggles.
 
         `let` (a list of room tags or session ids) holds everyone and lets those rooms play;
-        it replaces the list. `{"paused": false}` releases everyone, list included.
+        it replaces the list. `{"paused": false}` releases everyone, list included. Under a
+        person's hold, while a click plays through it, a toggle or `{"paused": true}` stops
+        that read and the hold stays, as the hotkey does (`stopped_read` in the reply).
         """
         before = self.server.read_playback_state()
         want = body.get("paused")
         let = body.get("let")
+        read = click_read_through_hold(before)
+        if read and let is None and (want is None or want is True):
+            stop_read(read)
+            self.server.log_fn("Bridge stopped the read playing through the hold; the hold stays")
+            view = pause_view(before, self.server.mic_hold_max_s())
+            view["changed"] = False
+            view["stopped_read"] = read
+            self._send_json(200, view)
+            return
         if want is None and let is None:
             want = not before.get("paused", False)
         elif want is not None and not isinstance(want, bool):

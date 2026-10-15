@@ -182,7 +182,7 @@ _daemon_mode = False
 
 # The session whose message is playing or about to play; the hold is judged against it
 # (state.may_play), so a room a person let through keeps speaking while the rest wait.
-_SPEAKING: dict[str, str] = {"session": "", "lane": ""}
+_SPEAKING: dict[str, Any] = {"session": "", "lane": "", "queued_at": None}
 
 # Now blocks the bridge has queued ("asked") and how many of those the loop has seen settled
 # ("settled"). While asked is ahead, whatever plays outside the now lane is cut off the way a
@@ -206,10 +206,11 @@ def _speaking(msg: dict) -> None:
     """Name the message playing or about to play; the hold and the preempt judge it."""
     _SPEAKING["session"] = str(msg.get("session_id", ""))
     _SPEAKING["lane"] = str(msg.get("lane") or "")
+    _SPEAKING["queued_at"] = msg.get("timestamp")
 
 
 def _may_play(state: dict, msg: dict) -> bool:
-    return may_play(state, str(msg.get("session_id", "")))
+    return may_play(state, str(msg.get("session_id", "")), str(msg.get("lane") or ""), msg.get("timestamp"))
 
 
 def held_now(state: dict | None = None) -> bool:
@@ -217,7 +218,24 @@ def held_now(state: dict | None = None) -> bool:
     s = read_playback_state() if state is None else state
     if _preempt_pending() and _SPEAKING["lane"] != NOW_LANE:
         return True
-    return not may_play(s, _SPEAKING["session"])
+    return not may_play(s, _SPEAKING["session"], _SPEAKING["lane"], _SPEAKING["queued_at"])
+
+
+def take_stop_read(job_id: str | None, state: dict | None = None) -> bool:
+    """Whether a stop_read in playback.json names this job; marks it cancelled and clears it.
+
+    The pause hotkey writes it for a click playing through a hold (state.stop_read); from
+    here on the read ends as a page's /stop ends it.
+    """
+    if not job_id:
+        return False
+    s = read_playback_state() if state is None else state
+    if s.get("stop_read") != job_id:
+        return False
+    write_playback_state(stop_read=None)
+    JOBS.update(job_id, state="cancelled")
+    log(f"Stopped the read {job_id} that played through the hold; the hold stays")
+    return True
 # log() is called from the synth, bridge and mic-watcher threads too.
 _log_lock = threading.Lock()
 
@@ -759,6 +777,7 @@ def daemon_play_audio(
     if not player:
         log("No audio player available", "ERROR")
         return (False, False, 0.0)
+    take_stop_read(job_id)
     if JOBS.state(job_id) == "cancelled":
         # A /stop landed between the caller's last look and here: start nothing.
         return (False, False, 0.0)
@@ -793,6 +812,7 @@ def daemon_play_audio(
                     f"Still playing (PID {proc.pid}, {now - start_time:.0f}s, paused={state.get('paused')})"
                 )
                 last_status_log = now
+            take_stop_read(job_id, state)
             if JOBS.cancelled(job_id):
                 elapsed = time.monotonic() - start_time
                 log(f"Audio cancelled by bridge (PID {proc.pid}) after {elapsed:.1f}s")
@@ -972,6 +992,7 @@ def play_sentences(
         """The stream's end if a stop, pause or shutdown is waiting, else None."""
         # A bridge /stop between plays marks the job cancelled without a cancel
         # request (there is no player to kill); JOBS.cancelled checks both.
+        take_stop_read(job_id)
         if JOBS.cancelled(job_id):
             return cancelled(i)
         if held_now() or _shutdown_requested:
@@ -1542,8 +1563,10 @@ def prepare_message(msg: dict, raw_config: dict) -> PreparedMessage:
         "pitch_filter": msg.get("pitch_filter", ""),
     }
     if msg.get("lane"):
-        # A cut-off now block resumes as one, and a cut-off room is not taken for a now block.
+        # A cut-off now block resumes as one, and a cut-off room is not taken for a now block;
+        # the queue time is what a hold is judged against (state.may_play).
         current_msg_info["lane"] = str(msg["lane"])
+        current_msg_info["timestamp"] = msg.get("timestamp")
     if job_id:
         current_msg_info["id"] = job_id
         current_msg_info["source"] = msg.get("source")
@@ -1845,11 +1868,15 @@ def daemon_loop(lockpick: bool = False) -> None:
             cut_at = 0.0
         if time.time() - cut_at > RESUME_AFTER_RESTART_S:
             stale_fields.append("preempted_message")
+    if startup_state.get("stop_read"):
+        # A stop for a read the previous daemon played; no job here carries that id.
+        stale_fields.append("stop_read")
     if stale_fields:
         write_playback_state(
             audio_pid=None,
             current_message=None if "current_message" in stale_fields else UNSET,
             preempted_message=None if "preempted_message" in stale_fields else UNSET,
+            stop_read=None if "stop_read" in stale_fields else UNSET,
             paused=False if "mic-pause" in stale_fields else None,
             paused_by=None if "mic-pause" in stale_fields else UNSET,
         )

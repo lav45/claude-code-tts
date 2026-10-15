@@ -103,8 +103,12 @@ separate "daemon down" answer because the bridge lives inside the daemon.
   stopped, rewound a little, once no now block is left; then the queue goes on in order. Now
   blocks never cut each other: a second click queues behind the first (send `/stop` for the
   page's source first to replace a read; it also cancels a read of that source a click cut
-  off). A hold, a pause and a recording hold a now block like any other message: it plays
-  first when the hold is released. Added in 9.58.0 (9.59.1: holds apply); an older bridge answers `400` for it, so a page can
+  off). A person's hold that began before the click does not hold it: the click plays through
+  and the rooms stay held. A toggle during that read (the hotkey, or `POST /pause` with `{}` or
+  `{"paused": true}`) stops the read and keeps the hold; the next toggle releases. A hold begun
+  during the read holds it (it plays first on release), and a recording holds it as it holds
+  everything. Added in 9.58.0 (9.59.1 held every click; 9.60.0 lets a click through, JMO D112);
+  an older bridge answers `400` for it, so a page can
   send it and resend without `lane` on that `400`. Any other value: `400`.
 
 Response `202`:
@@ -225,7 +229,9 @@ toggles it. `{"let": ["tts", "jmo"]}` holds everyone and lets those rooms play; 
 list, so send the whole list each time (up to 32 entries of `[A-Za-z0-9_.-]`). `{"paused": false}`
 releases everyone, list included (the kraken); `let` with `paused: false` is `400`. Anything else
 in `paused`: `400`. The response is the `GET` shape plus `changed`,
-false when the hold already matched. Only the flag is written: the play loop polls it every
+false when the hold already matched. While a click plays through a person's hold, `{}` and
+`{"paused": true}` stop that read instead and leave the hold: `changed` is false and
+`stopped_read` names the read's job id (9.60.0). Only the flag is written: the play loop polls it every
 50 ms and stops the player itself, rewinding a little so nothing is lost on resume, exactly as
 it does for the hotkey. A resume clears a mic hold as well, since a person pressing resume
 knows better than the watcher.

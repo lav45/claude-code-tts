@@ -1700,10 +1700,25 @@ def cmd_pause(args: argparse.Namespace) -> None:
     every 50 ms and stops the player itself, treating the stop as a pause (position
     saved, replay on resume). Killing the player from here instead, as this command did
     through 9.33.0, made the daemon see a finished process and drop the message.
-    """
-    from claude_code_tts.state import read_playback_state, set_paused
 
-    if read_playback_state().get("paused", False):
+    Under a person's hold, while a click on a page plays through it, the toggle stops that
+    read and leaves the hold in place: releasing everyone to silence one read was the
+    wrong way round (JMO, D112 B). The next press releases as before.
+    """
+    from claude_code_tts.state import (
+        click_read_through_hold,
+        read_playback_state,
+        set_paused,
+        stop_read,
+    )
+
+    state = read_playback_state()
+    read = click_read_through_hold(state)
+    if read:
+        stop_read(read)
+        _notify("Read stopped, still held")
+        print("Stopped the read that played through the hold; still held")
+    elif state.get("paused", False):
         set_paused(False)
         _notify("Playback resumed")
         print("Resumed")

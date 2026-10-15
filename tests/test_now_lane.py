@@ -1,12 +1,14 @@
 """Lane "now": a block a person clicked to hear plays first, cutting off a room mid-message.
 
 The room's message resumes where it was cut once no now block is left (JMO 2026-10-13: "a
-click on hear is where his eyes are, so it speaks FIRST"). A hold holds a click like
-anything else: the one way to stop a read must never stop working.
+click on hear is where his eyes are, so it speaks FIRST"). A click plays through a person's
+hold set before it; the pause hotkey during that read stops only the read (JMO, D112 B). A
+hold begun during the read, and a recording, hold it.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import threading
@@ -20,7 +22,7 @@ import claude_code_tts.daemon as d
 import claude_code_tts.msgqueue as mq
 import claude_code_tts.state as st
 from claude_code_tts.bridge import JOBS, write_bridge_message
-from claude_code_tts.state import hold, may_play, release
+from claude_code_tts.state import hold, may_play
 
 
 def _m(ts: float, **extra: object) -> dict:
@@ -30,6 +32,42 @@ def _m(ts: float, **extra: object) -> dict:
 def test_now_goes_before_everything_and_keeps_its_own_order() -> None:
     msgs = [_m(1.0, type="control"), _m(2.0, lane="background"), _m(3.0), _m(4.0, lane="now"), _m(5.0, lane="now")]
     assert [x["timestamp"] for x in mq.play_order(msgs)] == [4.0, 5.0, 1.0, 3.0, 2.0]
+
+
+class TestMayPlay:
+    held = {"paused": True, "paused_by": "user", "paused_since": 100.0}
+
+    def test_a_click_after_a_persons_hold_plays(self) -> None:
+        assert may_play(self.held, "browser", "now", 101.0)
+
+    def test_a_hold_begun_during_the_read_holds_it(self) -> None:
+        assert not may_play(self.held, "browser", "now", 99.0)
+
+    def test_a_recording_holds_it(self) -> None:
+        assert not may_play({**self.held, "paused_by": "mic"}, "browser", "now", 101.0)
+        assert not may_play({**self.held, "mic_held": True}, "browser", "now", 101.0)
+
+    def test_other_lanes_and_a_missing_stamp_wait_as_before(self) -> None:
+        assert not may_play(self.held, "browser", "background", 101.0)
+        assert not may_play(self.held, "browser", "now", None)
+        assert not may_play(self.held, "browser", "now", True)
+
+
+class TestClickReadThroughHold:
+    held = {"paused": True, "paused_by": "user", "paused_since": 100.0}
+    read = {"id": "j1", "session_id": "browser", "lane": "now", "timestamp": 101.0}
+
+    def test_names_the_click_the_hold_lets_play(self) -> None:
+        assert st.click_read_through_hold({**self.held, "current_message": self.read}) == "j1"
+
+    def test_none_without_a_persons_hold(self) -> None:
+        assert st.click_read_through_hold({"paused": False, "current_message": self.read}) is None
+        assert st.click_read_through_hold({**self.held, "paused_by": "mic", "current_message": self.read}) is None
+
+    def test_none_for_a_click_the_hold_holds_or_a_room(self) -> None:
+        assert st.click_read_through_hold({**self.held, "current_message": {**self.read, "timestamp": 99.0}}) is None
+        assert st.click_read_through_hold({**self.held, "current_message": {**self.read, "lane": ""}}) is None
+        assert st.click_read_through_hold(self.held) is None
 
 
 def _harness():
@@ -139,21 +177,53 @@ def test_a_click_cuts_a_room_off_and_the_room_resumes_after(tmp_path: Path, unit
     assert not d._preempt_pending()
 
 
-def test_a_hold_holds_a_click_and_the_release_plays_it_first(tmp_path: Path) -> None:
-    """Review of 6c0187d: a click let through a hold could then be stopped by no pause at all."""
+def test_a_click_plays_through_a_hold_set_before_it(tmp_path: Path) -> None:
     state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, "sleep 0.05")
     try:
         hold([])
         time.sleep(0.05)
         _enqueue_room(queue_dir, "a room waits", "alice--claude--a")
         _click("what JMO clicked")
+        assert _wait_for(lambda: "what JMO clicked" in spoken)
+        time.sleep(0.3)
+        assert spoken == ["what JMO clicked"], "the room must wait for the hold"
+        assert st.read_playback_state()["paused"] is True
+    finally:
+        stop()
+
+
+def _pause_hotkey() -> None:
+    from claude_code_tts import cli
+
+    with patch.object(cli, "_notify"):
+        cli.cmd_pause(argparse.Namespace())
+
+
+def test_the_hotkey_during_a_click_through_a_hold_stops_only_that_read(tmp_path: Path) -> None:
+    """Review of 6c0187d: the toggle released every room to stop one read (JMO, D112 B)."""
+    playing = tmp_path / "click-playing"
+    body = f'case "$*" in *browser*) echo x >> {playing}; sleep 2 ;; *) sleep 0.05 ;; esac'
+    state_dir, queue_dir, spoken, stop = _run_loop(tmp_path, body)
+    try:
+        hold([])
+        time.sleep(0.05)
+        _enqueue_room(queue_dir, "a room waits", "alice--claude--a")
+        click = _click("what JMO clicked")
+        assert _wait_for(lambda: playing.exists())
+        _pause_hotkey()
+        assert _wait_for(lambda: JOBS.state(click["id"]) == "cancelled")
+        assert _wait_for(lambda: not st.read_playback_state().get("current_message"))
         time.sleep(0.4)
-        assert spoken == [], "a hold holds a click like anything else"
-        assert not may_play(st.read_playback_state(), "browser")
-        release()
+        state = st.read_playback_state()
+        assert state["paused"] is True and state["paused_by"] == "user", "the hold stays"
+        assert "stop_read" not in state
+        assert spoken == ["what JMO clicked"], "the room waits and the read does not resume"
+        _pause_hotkey()
+        assert st.read_playback_state()["paused"] is False, "the next press releases as before"
         assert _wait_for(lambda: spoken == ["what JMO clicked", "a room waits"])
     finally:
         stop()
+    assert "played through the hold; the hold stays" in (state_dir / "daemon.log").read_text()
 
 
 def test_a_pause_during_a_click_stops_it_and_it_resumes_first(tmp_path: Path) -> None:

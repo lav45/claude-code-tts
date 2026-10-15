@@ -453,6 +453,29 @@ def test_pause_post_sets_and_reports_no_change(server: Bridge) -> None:
     assert status == 400
 
 
+def test_pause_during_a_click_through_a_hold_stops_the_read_and_keeps_the_hold(
+    server: Bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JMO, D112 B: Pause on a page, like the hotkey, stops the read instead of releasing everyone."""
+    stopped: list[str] = []
+    monkeypatch.setattr(bridge_mod, "stop_read", stopped.append)
+    server.fake.state.update(  # type: ignore[attr-defined]
+        paused=True,
+        paused_by="user",
+        paused_since=100.0,
+        current_message={"id": "j1", "session_id": "browser", "lane": "now", "timestamp": 101.0, "source": "hear"},
+    )
+    for body in ({}, {"paused": True}):
+        status, reply, _ = call(server, "POST", "/pause", body)
+        assert status == 200
+        assert reply["paused"] is True and reply["changed"] is False and reply["stopped_read"] == "j1"
+    assert stopped == ["j1", "j1"]
+    assert server.fake.state["paused"] is True  # type: ignore[attr-defined]
+    status, reply, _ = call(server, "POST", "/pause", {"paused": False})
+    assert reply["paused"] is False and "stopped_read" not in reply, "an explicit release still releases"
+    assert stopped == ["j1", "j1"]
+
+
 def test_pause_resume_releases_a_mic_hold(server: Bridge) -> None:
     server.fake.state.update(paused=True, paused_by="mic")  # type: ignore[attr-defined]
     status, body, _ = call(server, "POST", "/pause", {"paused": False})
