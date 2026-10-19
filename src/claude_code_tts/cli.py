@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import random
@@ -2624,6 +2625,12 @@ def _speak_from_hook_unguarded(args: argparse.Namespace) -> None:
             pass
         elif speakable and _same_text(speakable[-1][2], input_text):
             pass  # landed already; spoken from the file as before
+        elif not speakable and prompt_id and _covered_reply(transcript, watermark, prompt_id, input_text):
+            # Landed and covered: a PostToolUse in the second the line landed (a subagent's
+            # tool call carries the parent's transcript) took it from the file and moved
+            # the watermark past it. Its claim is keyed by the message, this one would be
+            # keyed by the turn, so the store would let both speak.
+            debug(f"stop: the response ({len(input_text)} chars) landed behind the watermark, spoken already")
         else:
             from_input = True
             if watermark == 0:
@@ -2791,6 +2798,37 @@ def _first_prompt_line(transcript: Path, start: int, end: int) -> int | None:
     except OSError:
         return None
     return None
+
+
+def _covered_reply(transcript: Path, watermark: int, prompt_id: str, text: str) -> bool:
+    """Is `text` the last assistant text of the turn `prompt_id`, behind the watermark?
+
+    The turn runs from its first line whose promptId is the Stop's prompt_id (its prompt;
+    its tool results carry the same id) to the first line of another promptId (the next
+    prompt, a subagent's hand-back too). The same words in another turn are another reply.
+    """
+    try:
+        with open(transcript) as f:
+            lines = list(itertools.islice(f, watermark))
+    except OSError:
+        return False
+    start: int | None = None
+    end = len(lines)
+    for idx, line in enumerate(lines):
+        try:
+            data = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        line_prompt = data.get("promptId") if isinstance(data, dict) else None
+        if start is None and line_prompt == prompt_id:
+            start = idx
+        elif start is not None and line_prompt and line_prompt != prompt_id:
+            end = idx
+            break
+    if start is None:
+        return False
+    turn = [entry for entry in _speakable_messages(transcript, start, "post_tool_use") if entry[0] < end]
+    return bool(turn) and _same_text(turn[-1][2], text)
 
 
 def _speak_claimed(

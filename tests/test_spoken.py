@@ -1348,3 +1348,36 @@ def test_an_unusable_hook_store_is_said_once_at_info(tmp_path, fake_state_dir, m
     _hook(transcript, "stop", text="a reply spoken while the store is unusable", prompt="p1")
     notices = [ln for ln in lines if ln.startswith("INFO: spoken store unusable")]
     assert len(notices) == 1 and "reply" not in notices[0]
+
+
+# --- A subagent's PostToolUse speaks the landed reply first, then the turn's Stop --------------
+# A subagent's tool calls fire PostToolUse with the parent's session and transcript. One that
+# fires in the second the reply lands takes the reply from the file and moves the watermark
+# past it; the Stop that follows finds nothing after the watermark and spoke its input again
+# under a turn key, which never meets the file key (TTS Player, 2026-10-19 13:43 and 13:46).
+# The Stop's prompt_id is the promptId of its turn's lines (Claude Code 2.1.303).
+
+
+def _prompt(text: str, prompt: str) -> dict:
+    return {**_user(text), "promptId": prompt}
+
+
+def test_a_reply_a_subagent_hook_spoke_from_the_file_is_not_spoken_again_by_the_stop(tmp_path, fake_state_dir):
+    transcript = _turn(tmp_path, "sub")
+    final = "half of the stands are marked up, the rest are on their way"
+    _append(transcript, [_prompt("a subagent hands back", "p2"), _assistant_msg("m2", final)])
+    assert _hook(transcript, "post_tool_use") == [final]
+    _append(transcript, [_prompt("<task-notification>the next one</task-notification>", "p3")])
+    assert _hook(transcript, "stop", text=final, prompt="p2") == []
+
+
+def test_the_same_words_in_the_next_turn_still_speak_from_the_stop(tmp_path, fake_state_dir):
+    """The skip looks only at the Stop's own turn: the same words in an earlier turn are an
+    earlier reply, even when the hooks of the new turn left the watermark behind its prompt."""
+    transcript = _turn(tmp_path, "sub2")
+    final = "half of the stands are marked up, the rest are on their way"
+    _append(transcript, [_prompt("a subagent hands back", "p2"), _assistant_msg("m2", final)])
+    assert _hook(transcript, "post_tool_use") == [final]
+    _append(transcript, [_prompt("and once more", "p3"), _tool_use("m3"), _tool_result()])
+    assert _hook(transcript, "post_tool_use") == []
+    assert _hook(transcript, "stop", text=final, prompt="p3") == [final]
