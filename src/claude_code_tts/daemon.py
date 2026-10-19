@@ -715,6 +715,21 @@ def log_synthesis_time(persona: str, audio_file: Path, wall_s: float) -> None:
     log(f"Synthesized {audio_s:.1f}s of speech in {wall_s:.1f}s for {persona} ({rate})")
 
 
+def player_env(state: dict) -> dict[str, str]:
+    """The player's environment: the daemon's, plus CLAUDE_TTS_MESSAGE_ID of the message playing.
+
+    An external player (config.json "player_command") files each WAV under its message; the id
+    is current_message.id of playback.json, absent when no message is current (an announcement).
+    """
+    env = dict(os.environ)
+    env.pop("CLAUDE_TTS_MESSAGE_ID", None)
+    current = state.get("current_message")
+    message_id = current.get("id") if isinstance(current, dict) else None
+    if isinstance(message_id, str) and message_id:
+        env["CLAUDE_TTS_MESSAGE_ID"] = message_id
+    return env
+
+
 def daemon_play_audio(
     wav_file: Path, speed: float = 1.0, job_id: str | None = None
 ) -> tuple[bool, bool, float]:
@@ -743,7 +758,9 @@ def daemon_play_audio(
             cmd.extend(["-r", str(speed)])
         cmd.append(str(wav_file))
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=player_env(read_playback_state())
+        )
         write_playback_state(audio_pid=proc.pid)
         start_time = time.monotonic()
         log(f"Audio started (PID {proc.pid}), polling for pause...")

@@ -23,6 +23,7 @@ from claude_code_tts.config import (
     TTS_CONFIG_DIR,
     TTSConfig,
     debug,
+    load_raw_config,
 )
 from claude_code_tts.sherpa_speak import is_supertonic
 
@@ -43,8 +44,25 @@ def detect_platform() -> str:
     return "unknown"
 
 
+def configured_player() -> list[str] | None:
+    """config.json "player_command": the command prefix of an external player, or None.
+
+    An application that plays the daemon's audio itself (a desktop player with its own queue)
+    names its command here instead of shadowing paplay or afplay in the daemon's PATH. The WAV
+    path is appended as the last argument, as for the built-in players. Anything but a
+    non-empty list of strings is ignored and the built-in detection runs.
+    """
+    command = load_raw_config().get("player_command")
+    if isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command):
+        return list(command)
+    return None
+
+
 def detect_player() -> list[str] | None:
     """Return the audio player command prefix, or None if none found."""
+    configured = configured_player()
+    if configured:
+        return configured
     if shutil.which("afplay"):
         return ["afplay"]
     if shutil.which("paplay"):

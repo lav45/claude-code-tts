@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import secrets
 import time
 from collections.abc import Callable
@@ -24,7 +25,10 @@ from pathlib import Path
 
 from claude_code_tts.config import TTS_CONFIG_DIR
 
-QUEUE_DIR = TTS_CONFIG_DIR / "queue"
+# CLAUDE_TTS_QUEUE_DIR moves the queue for the process that has it: an application that sits
+# between the hooks and the daemon (a desktop player keeping the text) gives it to the hook's
+# `speak` and forwards the messages to the daemon's own queue itself.
+QUEUE_DIR = Path(os.environ.get("CLAUDE_TTS_QUEUE_DIR") or TTS_CONFIG_DIR / "queue")
 
 BACKGROUND_LANE = "background"
 

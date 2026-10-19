@@ -333,6 +333,21 @@ reach it (a userscript can; a script inline in a CSP-locked page cannot).
 }
 ```
 
+### External player
+
+An application that plays the daemon's audio itself (a desktop player with its own queue)
+names its command in `config.json`; the daemon runs it instead of `afplay`/`paplay`/`aplay`,
+with the WAV path as the last argument and `CLAUDE_TTS_MESSAGE_ID` (the message being played)
+in its environment:
+
+```json
+{ "player_command": ["tts-player", "sink"] }
+```
+
+`CLAUDE_TTS_QUEUE_DIR` moves the message queue for the process that has it: such an
+application gives it to the hook's `claude-tts speak` and forwards the messages to the
+daemon's queue itself.
+
 ### Environment variables
 
 ```bash
