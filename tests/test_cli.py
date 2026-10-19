@@ -116,6 +116,46 @@ class TestMuteUnmute:
         assert config["default_muted"] is False and config["muted"] is False
         assert "new ones start speaking" in capsys.readouterr().out
 
+    def test_unmute_room_unmutes_both_ids_of_one_room_and_no_other(self, tts_home, patched_env, capsys):
+        """Haley 2026-10-13: unmuting one room took a hand edit of two files (its folder id and its room id)."""
+        sd = tts_home / ".claude-tts" / "sessions.d"
+        mine = ["alice--claude--widgets", "-Users-alice-code-acme-widgets"]
+        others = ["alice--claude--gizmos", "-Users-alice-code-acme-gizmos", "-Users-alice-code-acme-blue-widgets-old"]
+        for sid in mine + others:
+            (sd / f"{sid}.json").write_text(json.dumps({"muted": True, "persona": "claude-chill"}))
+        main(["unmute", "--room", "widgets"])
+        for sid in mine:
+            assert json.loads((sd / f"{sid}.json").read_text()) == {"muted": False, "persona": "claude-chill"}
+        for sid in others:
+            assert json.loads((sd / f"{sid}.json").read_text())["muted"] is True, sid
+        out = capsys.readouterr().out
+        assert "Unmuted: alice--claude--widgets" in out and "2 session(s) of room widgets unmuted" in out
+        config = json.loads((tts_home / ".claude-tts" / "config.json").read_text())
+        assert config["default_muted"] is False and config["muted"] is False, "the default is not touched"
+
+    def test_mute_room_by_tag_and_by_full_id(self, tts_home, patched_env):
+        sd = tts_home / ".claude-tts" / "sessions.d"
+        (sd / "alice--claude--claude-code-tts.json").write_text("{}")
+        (sd / "alice--claude--notes.json").write_text("{}")
+        main(["mute", "--room", "tts"])
+        assert json.loads((sd / "alice--claude--claude-code-tts.json").read_text())["muted"] is True
+        assert "muted" not in json.loads((sd / "alice--claude--notes.json").read_text())
+        main(["mute", "--room", "alice--claude--notes"])
+        assert json.loads((sd / "alice--claude--notes.json").read_text())["muted"] is True
+
+    def test_a_room_with_no_session_changes_nothing_and_exits_1(self, tts_home, patched_env, capsys):
+        (tts_home / ".claude-tts" / "sessions.d" / "alice--claude--notes.json").write_text("{}")
+        with pytest.raises(SystemExit) as e:
+            main(["unmute", "--room", "nope"])
+        assert e.value.code == 1
+        assert "nothing changed" in capsys.readouterr().out
+        assert json.loads((tts_home / ".claude-tts" / "sessions.d" / "alice--claude--notes.json").read_text()) == {}
+
+    def test_room_and_all_are_one_or_the_other(self, tts_home, patched_env):
+        with pytest.raises(SystemExit) as e:
+            main(["unmute", "--all", "--room", "tts"])
+        assert e.value.code == 2
+
 
 class TestSpeed:
     def test_show_speed(self, tts_home, patched_env, capsys):
@@ -217,6 +257,26 @@ class TestPersonaAddRemove:
         assert personas["k"]["voice"] == "en_US-hfc_male-medium"
         assert personas["s"]["voice_sherpa"] == "vctk-vits"
         assert personas["s"]["speaker_sherpa"] == 42
+
+    def test_add_speaker_without_sherpa_is_the_piper_speaker(self, tts_home, patched_env):
+        main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "12"])
+        entry = self._config(tts_home)["personas"]["w"]
+        assert (entry["voice"], entry["speaker_piper"]) == ("en_GB-vctk-medium", 12)
+        assert "speaker_sherpa" not in entry
+
+    def test_add_refuses_a_speaker_the_installed_model_lacks(self, tts_home, patched_env, capsys, monkeypatch, tmp_path):
+        voices = tmp_path / "voices"
+        voices.mkdir()
+        (voices / "en_GB-vctk-medium.onnx.json").write_text(json.dumps({"num_speakers": 109}))
+        monkeypatch.setattr("claude_code_tts.cli.VOICES_DIR", voices)
+        with pytest.raises(SystemExit) as exc:
+            main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "109"])
+        assert exc.value.code == 2
+        assert "109 speaker(s), ids 0-108" in capsys.readouterr().out
+        assert "w" not in self._config(tts_home).get("personas", {})
+        with pytest.raises(SystemExit) as exc:
+            main(["persona", "add", "w", "--voice", "en_GB-vctk-medium", "--speaker", "-1"])
+        assert exc.value.code == 2
 
     def test_add_refuses_to_overwrite_without_force(self, tts_home, patched_env, capsys):
         with pytest.raises(SystemExit) as exc:

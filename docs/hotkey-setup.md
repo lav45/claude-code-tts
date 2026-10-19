@@ -10,8 +10,11 @@ claude-tts pause
 ```
 
 Running it toggles between paused and playing states:
-- If audio is playing: pauses it (SIGSTOP)
-- If audio is paused: resumes it (SIGCONT)
+- If nothing is held: holds everyone; what is playing stops and rewinds a little
+- If held: releases, and the stopped message resumes where it was cut
+
+While everyone is held and a read you clicked on a page plays through the hold, a press
+stops just that read and the hold stays; the next press releases as before.
 
 It also shows a macOS notification to confirm the action.
 

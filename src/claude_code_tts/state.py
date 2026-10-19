@@ -28,6 +28,7 @@ from pathlib import Path
 
 from claude_code_tts import __version__
 from claude_code_tts.config import TTS_CONFIG_DIR, atomic_write_json
+from claude_code_tts.msgqueue import NOW_LANE
 
 PID_FILE = TTS_CONFIG_DIR / "daemon.pid"
 LOCK_FILE = TTS_CONFIG_DIR / "daemon.lock"
@@ -393,6 +394,8 @@ def write_playback_state(
     current_message: dict | None | object = UNSET,
     let_through: list[str] | None | object = UNSET,
     mic_held: bool | None = None,
+    preempted_message: dict | None | object = UNSET,
+    stop_read: str | None | object = UNSET,
 ) -> None:
     """Update playback state atomically.
 
@@ -400,10 +403,15 @@ def write_playback_state(
     This prevents mic-unpause from overriding a manual pause. let_through is the
     list of rooms a person's hold lets play (see may_play); mic_held marks a
     recording that began under a person's hold, so those rooms wait for it too.
-    A release (paused=False) clears both.
+    A release (paused=False) clears both. preempted_message is a message a "now"
+    block cut off, kept here (not in current_message, which the now block takes)
+    until the now blocks have played and it resumes. stop_read is the job id of a read
+    a person asked to stop from outside the daemon (stop_read()); the daemon clears it.
     """
     with _PLAYBACK_STATE_LOCK:
-        _write_playback_state_locked(audio_pid, paused, paused_by, current_message, let_through, mic_held)
+        _write_playback_state_locked(
+            audio_pid, paused, paused_by, current_message, let_through, mic_held, preempted_message, stop_read
+        )
 
 
 def _write_playback_state_locked(
@@ -413,6 +421,8 @@ def _write_playback_state_locked(
     current_message: dict | None | object,
     let_through: list[str] | None | object = UNSET,
     mic_held: bool | None = None,
+    preempted_message: dict | None | object = UNSET,
+    stop_read: str | None | object = UNSET,
 ) -> None:
     state = read_playback_state()
     if audio_pid is not UNSET:
@@ -442,6 +452,16 @@ def _write_playback_state_locked(
             state.pop("mic_held", None)
     if current_message is not UNSET:
         state["current_message"] = current_message
+    if preempted_message is not UNSET:
+        if preempted_message:
+            state["preempted_message"] = preempted_message
+        else:
+            state.pop("preempted_message", None)
+    if stop_read is not UNSET:
+        if stop_read:
+            state["stop_read"] = stop_read
+        else:
+            state.pop("stop_read", None)
     state["updated_at"] = time.time()
     atomic_write_json(PLAYBACK_STATE_FILE, state)
 
@@ -495,17 +515,59 @@ def lets_through(session_id: str, let_through: list[str] | None) -> bool:
     return any(entry in (session_id, tag, last) for entry in let_through)
 
 
-def may_play(state: dict, session_id: str) -> bool:
+def may_play(state: dict, session_id: str, lane: str = "", queued_at: object = None) -> bool:
     """Whether a message from session_id may play under this state.
 
     Not paused: yes. A mic hold (paused_by "mic"), or a recording under a person's hold
-    (mic_held): nobody, the person is speaking. A person's hold: only the rooms let through.
+    (mic_held): nobody, the person is speaking. A person's hold: the rooms let through, and
+    a "now" block queued after the hold began (a click is the person asking; JMO, D112 B).
+    A hold that began after the click holds it, and the pause hotkey pressed during a read
+    that plays through stops that read (click_read_through_hold, stop_read).
     """
     if not state.get("paused"):
         return True
     if state.get("paused_by") != "user" or state.get("mic_held"):
         return False
+    if lane == NOW_LANE and _queued_after_hold(state, queued_at):
+        return True
     return lets_through(session_id, state.get("let_through"))
+
+
+def _queued_after_hold(state: dict, queued_at: object) -> bool:
+    since = state.get("paused_since")
+    return (
+        isinstance(since, (int, float))
+        and isinstance(queued_at, (int, float))
+        and not isinstance(queued_at, bool)
+        and queued_at > since
+    )
+
+
+def click_read_through_hold(state: dict) -> str | None:
+    """The job id of a click playing through a person's hold, else None.
+
+    The read the pause hotkey stops in place of releasing everyone: a now block on deck
+    (current_message, written before synthesis) that the hold lets play only because it
+    was clicked after the hold began.
+    """
+    current = state.get("current_message")
+    if not isinstance(current, dict) or str(current.get("lane") or "") != NOW_LANE or not current.get("id"):
+        return None
+    if not (state.get("paused") and state.get("paused_by") == "user"):
+        return None
+    if not may_play(state, str(current.get("session_id", "")), NOW_LANE, current.get("timestamp")):
+        return None
+    return str(current["id"])
+
+
+def stop_read(job_id: str) -> None:
+    """Ask the daemon to cancel the read with this job id; the hold stays as it is.
+
+    Written to playback.json so a process outside the daemon (the hotkey's `claude-tts
+    pause`) can reach it; the play loop takes it on its next poll, the way a page's /stop
+    cancels its own read.
+    """
+    write_playback_state(stop_read=job_id)
 
 
 def hold(let: list[str] | None = None) -> dict:

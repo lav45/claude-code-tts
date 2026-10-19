@@ -194,13 +194,51 @@ def cmd_config(args: argparse.Namespace) -> None:
           "claude-tts config --changed hides the ones that match.")
 
 
+def _room_sessions(room: str) -> list[str]:
+    """The session ids in sessions.d that belong to a room, matched as `hold --let` matches.
+
+    A full id, a room tag (tts) or the id's last segment; a Claude Code folder id
+    (-Users-...-claude-code-tts) belongs to the room its path ends in, since one room's
+    checkout is spoken under both its folder id and its owner--house--room id.
+    """
+    from claude_code_tts.state import lets_through
+
+    if not TTS_SESSIONS_DIR.is_dir():
+        return []
+    found = []
+    for sf in sorted(TTS_SESSIONS_DIR.glob("*.json")):
+        sid = sf.stem
+        if lets_through(sid, [room]) and not sid.startswith("-"):
+            found.append(sid)
+        elif sid.startswith("-") and (sid == room or sid.endswith(f"-{room}")):
+            found.append(sid)
+    return found
+
+
+def _set_room_muted(room: str, muted: bool) -> None:
+    """Mute or unmute every session of one room; prints each one, exit 1 when none match."""
+    sessions = _room_sessions(room)
+    if not sessions:
+        print(f"No session in {TTS_SESSIONS_DIR} belongs to room {room!r}; nothing changed")
+        print("Rooms are named as `claude-tts hold --let` names them: tts, or alice--claude--claude-code-tts")
+        sys.exit(1)
+    for sid in sessions:
+        session_set(sid, "muted", muted)
+        print(f"{'Muted' if muted else 'Unmuted'}: {sid}")
+    print(f"{len(sessions)} session(s) of room {room} {'muted' if muted else 'unmuted'}")
+
+
 def cmd_mute(args: argparse.Namespace) -> None:
-    """Mute TTS for this session or all sessions."""
+    """Mute TTS for this session, one room's sessions (--room), or all sessions."""
     config = load_raw_config()
     if not config:
         print(f"Config file not found: {TTS_CONFIG_FILE}")
         print("Run claude-tts-install first")
         sys.exit(1)
+
+    if getattr(args, "room", None):
+        _set_room_muted(args.room, True)
+        return
 
     if getattr(args, "all", False):
         config["default_muted"] = True
@@ -236,11 +274,15 @@ def cmd_mute(args: argparse.Namespace) -> None:
 
 
 def cmd_unmute(args: argparse.Namespace) -> None:
-    """Unmute TTS for this session, or every session and the default with --all."""
+    """Unmute TTS for this session, one room's sessions (--room), or every session and the default with --all."""
     if not TTS_CONFIG_FILE.exists():
         print(f"Config file not found: {TTS_CONFIG_FILE}")
         print("Run claude-tts-install first")
         sys.exit(1)
+
+    if getattr(args, "room", None):
+        _set_room_muted(args.room, False)
+        return
 
     if getattr(args, "all", False):
         config = load_raw_config()
@@ -375,33 +417,34 @@ def set_default_speed(speed: float, all_personas: bool = False, session_id: str 
 def cmd_name(args: argparse.Namespace) -> None:
     """Show or set the name this session says for itself when it takes the floor.
 
-    With `queue.speaker_transition` set to "announce" or "chime+announce", a room introduces
-    itself as "<name> of <house> house in <room> room" when the speaker changes, "Friend" until
-    it has chosen a name. The name is a session key, so a rebuilt room inherits it the way it
-    inherits its persona, and the voice card carries it.
+    With `queue.speaker_transition` set to "announce" or "chime+announce", the session says a
+    line for itself when the speaker changes, made by the first `speaker_lines` rule in config
+    that matches its id (speakerline.py), else "<name or project> says:". The name is a session
+    key, so a rebuilt session inherits it the way it inherits its persona, and the voice card
+    carries it. This prints which rule matched and every rule that was skipped and why.
     """
-    from claude_code_tts.daemon import speaker_line
-    from claude_code_tts.state import house_tag, room_tag
+    from claude_code_tts.speakerline import speak_line
 
     sid = get_session_id()
     value = (args.name or "").strip()
     if value.lower() == "reset":
         session_set(sid, "name", "")
-        print("Name cleared: this session introduces itself as Friend")
-        return
-    if value:
+        print("Name cleared")
+    elif value:
         if len(value) > 64:
             print("A name is 64 characters at most")
             sys.exit(1)
         session_set(sid, "name", value)
         print(f"Name set: {value}")
     name = str(session_read(sid).get("name") or "")
-    line = speaker_line({"session_id": sid, "name": name, "project": sid})
-    print(f"Name:     {name or '(none, says Friend)'}")
-    if "--" in sid:
-        print(f"House:    {house_tag(sid) or '(none)'}")
-        print(f"Room:     {room_tag(sid)}")
-    print(f"Says:     {line}")
+    spoken = speak_line({"session_id": sid, "name": name, "project": sid}, load_raw_config().get("speaker_lines"))
+    print(f"Name:     {name or '(none)'}")
+    for key, val in spoken.fields.items():
+        print(f"{key.capitalize() + ':':<10}{val}")
+    print(f"Rule:     {spoken.rule or '(none matched: <name or project> says:)'}")
+    for why in spoken.skipped:
+        print(f"Skipped:  {why}")
+    print(f"Says:     {spoken.line}")
     transition = load_raw_config().get("queue", {}).get("speaker_transition", "chime")
     if transition not in ("announce", "chime+announce"):
         print(f"Heard:    not yet; queue.speaker_transition is {transition!r}, set it to \"chime+announce\" to hear it")
@@ -590,8 +633,21 @@ def _persona_edit(args: argparse.Namespace, config: dict, sid: str) -> None:
         if args.speaker is not None:
             entry["speaker_sherpa"] = args.speaker
     elif args.speaker is not None:
-        print("--speaker applies to a sherpa model; give --sherpa MODEL with it")
-        sys.exit(2)
+        if not args.voice:
+            print("--speaker picks a voice inside a multi-speaker model; give --voice MODEL or --sherpa MODEL with it")
+            sys.exit(2)
+        if args.speaker < 0:
+            print(f"--speaker is a speaker id, 0 or more: {args.speaker}")
+            sys.exit(2)
+        meta_path = VOICES_DIR / f"{entry['voice']}.onnx.json"
+        try:
+            num_speakers = int(json.loads(meta_path.read_text()).get("num_speakers", 1))
+        except (OSError, ValueError, AttributeError):
+            num_speakers = 0  # model not installed here; the daemon's machine may have it
+        if num_speakers and args.speaker >= num_speakers:
+            print(f"{entry['voice']} has {num_speakers} speaker(s), ids 0-{num_speakers - 1}: {args.speaker}")
+            sys.exit(2)
+        entry["speaker_piper"] = args.speaker
     if args.mlx:
         from claude_code_tts.mlx_catalog import CATALOG, default_lang_for, resolve_model
         entry["voice_mlx"] = resolve_model(args.mlx)
@@ -1658,10 +1714,25 @@ def cmd_pause(args: argparse.Namespace) -> None:
     every 50 ms and stops the player itself, treating the stop as a pause (position
     saved, replay on resume). Killing the player from here instead, as this command did
     through 9.33.0, made the daemon see a finished process and drop the message.
-    """
-    from claude_code_tts.state import read_playback_state, set_paused
 
-    if read_playback_state().get("paused", False):
+    Under a person's hold, while a click on a page plays through it, the toggle stops that
+    read and leaves the hold in place: releasing everyone to silence one read was the
+    wrong way round (JMO, D112 B). The next press releases as before.
+    """
+    from claude_code_tts.state import (
+        click_read_through_hold,
+        read_playback_state,
+        set_paused,
+        stop_read,
+    )
+
+    state = read_playback_state()
+    read = click_read_through_hold(state)
+    if read:
+        stop_read(read)
+        _notify("Read stopped, still held")
+        print("Stopped the read that played through the hold; still held")
+    elif state.get("paused", False):
         set_paused(False)
         _notify("Playback resumed")
         print("Resumed")
@@ -1674,22 +1745,41 @@ def cmd_pause(args: argparse.Namespace) -> None:
 def cmd_hold(args: argparse.Namespace) -> None:
     """Hold everyone; let the named rooms (and this session, with --me) speak on.
 
-    Bare `hold` holds everyone and clears the list. `--let` and `--me` add to the list of a
-    hold already in place, so a person can let one friend through, then a second. The rooms
-    not on the list queue behind the scenes until `claude-tts kraken` lets everyone speak.
+    Bare `hold` holds everyone when nobody holds them. Over a person's hold already in place
+    it changes nothing and prints that hold, so it is safe as a question: through 9.51.2 it
+    cleared the list, and a person asking "who is held" undid a --let from two days before.
+    `--let` and `--me` add to the list, so a person can let one friend through, then a
+    second; `--clear` empties the list first, and with `--let` leaves only the rooms named.
+    The rooms not on the list queue behind the scenes until `claude-tts kraken`.
     """
-    from claude_code_tts.state import hold, let_rooms, room_tag
+    from claude_code_tts.state import hold, let_rooms, read_playback_state, room_tag
 
     rooms = list(args.let or [])
     if args.me:
         rooms.append(get_session_id())
-    state = hold([]) if not rooms else let_rooms(rooms)
+    before = read_playback_state()
+    held_by_person = bool(before.get("paused") and before.get("paused_by") == "user")
+    if args.clear:
+        state = hold(rooms)
+    elif rooms:
+        state = let_rooms(rooms)
+    elif held_by_person:
+        state = before
+    else:
+        state = hold([])
     letting = state.get("let_through") or []
-    if letting:
-        names = ", ".join(room_tag(r) if r == get_session_id() else r for r in letting)
+    names = ", ".join(room_tag(r) if r == get_session_id() else r for r in letting)
+    if state is before:
+        print(f"Already held, nothing changed. Letting through: {names or 'nobody'}")
+        print("claude-tts hold --let <room> adds one, --clear empties the list, claude-tts kraken releases")
+    elif letting:
         print(f"Held. Letting through: {names}")
     else:
         print("Held. Nobody is let through; claude-tts hold --let <room> or claude-tts kraken")
+    was = list(before.get("let_through") or []) if held_by_person else None
+    dropped = [r for r in (was or []) if r not in letting]
+    if dropped:
+        print(f"No longer let through: {', '.join(dropped)}")
     if state.get("mic_held"):
         print("A recording is in progress; the rooms let through wait for it to end")
 
@@ -2024,7 +2114,7 @@ def cmd_speak(args: argparse.Namespace) -> None:
     lang_mlx = cfg.lang_mlx
     speed = cfg.speed
     speed_method = cfg.speed_method or "playback"
-    speaker = None
+    speaker = cfg.speaker_piper if cfg.speaker_piper >= 0 else None
 
     # CLI overrides for mlx take precedence and disable other backends for
     # this one-shot call; a catalog id resolves to its Hugging Face repo.
@@ -2059,6 +2149,7 @@ def cmd_speak(args: argparse.Namespace) -> None:
 
     if args.voice:
         voice_path = VOICES_DIR / f"{args.voice}.onnx"
+        speaker = None  # the persona's speaker id names a voice in its own model, not this one
         voice_kokoro = ""
         voice_kokoro_blend = ""
         voice_sherpa = ""
@@ -4283,7 +4374,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- mute ---
     p = subparsers.add_parser("mute", help="Mute TTS for this session")
-    p.add_argument("--all", action="store_true", help="Mute all sessions globally")
+    who = p.add_mutually_exclusive_group()
+    who.add_argument("--all", action="store_true", help="Mute all sessions globally")
+    who.add_argument("--room", metavar="ROOM", help="Mute one room's sessions (tts, or alice--claude--claude-code-tts)")
     p.set_defaults(func=cmd_mute)
 
     # --- voices ---
@@ -4292,7 +4385,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- unmute ---
     p = subparsers.add_parser("unmute", help="Unmute TTS for this session")
-    p.add_argument("--all", action="store_true", help="Unmute every session and make new sessions speak by default")
+    who = p.add_mutually_exclusive_group()
+    who.add_argument("--all", action="store_true", help="Unmute every session and make new sessions speak by default")
+    who.add_argument("--room", metavar="ROOM", help="Unmute one room's sessions (tts, or alice--claude--claude-code-tts)")
     p.set_defaults(func=cmd_unmute)
 
     # --- speed ---
@@ -4311,7 +4406,8 @@ def main(argv: list[str] | None = None) -> None:
     p = subparsers.add_parser(
         "persona",
         help="Show, set, add or remove voice personas",
-        epilog="Examples: persona add house-geordi --voice en_GB-alan-medium --speed 2.0 --project;  persona remove old-name",
+        epilog="Examples: persona add house-geordi --voice en_GB-alan-medium --speed 2.0 --project;  "
+        "persona add wayland --voice en_GB-vctk-medium --speaker 12 --project;  persona remove old-name",
     )
     p.add_argument("name", nargs="?", help="Persona name, 'reset', 'add' or 'remove'")
     p.add_argument("target", nargs="?", help="With add or remove: the persona to add or remove")
@@ -4320,7 +4416,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--voice", metavar="MODEL", help="add: Piper voice model, e.g. en_GB-alan-medium")
     p.add_argument("--kokoro", metavar="VOICE", help="add: Kokoro voice for swift-kokoro, e.g. af_heart")
     p.add_argument("--sherpa", metavar="MODEL", help="add: sherpa-onnx model dir name under ~/.claude-tts/sherpa-models")
-    p.add_argument("--speaker", type=int, help="add: speaker id in a multi-speaker sherpa model")
+    p.add_argument("--speaker", type=int, help="add: speaker id in a multi-speaker model, the --sherpa one or else the Piper --voice")
     p.add_argument("--mlx", metavar="MODEL", help="add: mlx-audio model, a catalog id (kokoro) or Hugging Face repo")
     p.add_argument("--mlx-voice", metavar="NAME", help="add: voice preset for the mlx model, e.g. af_heart")
     p.add_argument("--mlx-lang", metavar="CODE", help="add: language code for the mlx model, e.g. a (Kokoro American)")
@@ -4500,9 +4596,12 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_pause)
 
     # --- hold / kraken ---
-    p = subparsers.add_parser("hold", help="Hold everyone; --let ROOM... and --me let named rooms speak on")
+    p = subparsers.add_parser(
+        "hold", help="Hold everyone (bare over a hold: show it, change nothing); --let ROOM... and --me let rooms speak on"
+    )
     p.add_argument("--let", nargs="+", metavar="ROOM", help="Room tags (tts, notes) or session ids to let through")
     p.add_argument("--me", action="store_true", help="Let this session through")
+    p.add_argument("--clear", action="store_true", help="Empty the let-through list first; with --let, only those rooms")
     p.set_defaults(func=cmd_hold)
     p = subparsers.add_parser("kraken", help="Release the kraken: everyone speaks again")
     p.add_argument("--drop", action="store_true", help="Drop what the hold kept first, so nothing held is replayed")

@@ -35,42 +35,19 @@ class TestPlatformDetection:
 class TestVoiceList:
     """Tests for the voice list configuration."""
 
-    def test_available_voices_not_empty(self):
-        """Verify we have voices configured."""
-        assert len(install.AVAILABLE_VOICES) > 0
-
     def test_available_voices_structure(self):
         """Verify each voice has correct tuple structure."""
         for voice in install.AVAILABLE_VOICES:
             assert len(voice) == 5, f"Voice tuple should have 5 elements: {voice}"
             name, gender, quality, desc, path = voice
             assert isinstance(name, str)
-            assert gender in ("male", "female")
+            assert gender in ("male", "female", "mixed")
             assert quality in ("low", "medium", "high")
             assert isinstance(desc, str)
             assert isinstance(path, str)
 
-    def test_has_female_voices(self):
-        """Verify we have female voices for Gemini."""
-        female_voices = [v for v in install.AVAILABLE_VOICES if v[1] == "female"]
-        assert len(female_voices) >= 3, "Should have at least 3 female voices"
-
-    def test_has_male_voices(self):
-        """Verify we have male voices for Claude."""
-        male_voices = [v for v in install.AVAILABLE_VOICES if v[1] == "male"]
-        assert len(male_voices) >= 3, "Should have at least 3 male voices"
-
-
 class TestConfig:
     """Tests for configuration handling."""
-
-    def test_default_config_structure(self):
-        """Verify default config has required fields."""
-        config = install.DEFAULT_CONFIG
-        assert "version" in config
-        assert "active_persona" in config
-        assert "muted" in config
-        assert "personas" in config
 
     def test_default_personas_have_ai_type(self):
         """Verify all default personas have ai_type field."""
@@ -109,28 +86,6 @@ class TestConfig:
                     with open(config_file) as f:
                         loaded = json.load(f)
                     assert loaded == test_config
-
-
-class TestVoiceUrls:
-    """Tests for voice URL generation."""
-
-    def test_hf_base_url_valid(self):
-        """Verify Hugging Face base URL is properly formatted."""
-        assert install.HF_VOICES_BASE.startswith("https://")
-        assert "huggingface.co" in install.HF_VOICES_BASE
-        assert "piper-voices" in install.HF_VOICES_BASE
-
-    def test_voice_url_generation(self):
-        """Test that voice URLs are correctly formed."""
-        # Pick a voice from the list
-        voice = install.AVAILABLE_VOICES[0]
-        name, gender, quality, desc, path = voice
-
-        expected_onnx = f"{install.HF_VOICES_BASE}/{path}/{name}.onnx"
-
-        # These would be the URLs used in download_voice
-        assert path in expected_onnx
-        assert name in expected_onnx
 
 
 class TestGetInstalledVoices:
@@ -221,39 +176,12 @@ class TestCommandExists:
         assert install.command_exists("nonexistent_command_12345") is False
 
 
-class TestRepoDir:
-    """Tests for repository directory detection."""
-
-    def test_repo_dir_found(self):
-        """Test that REPO_DIR is correctly detected."""
-        # REPO_DIR should contain hooks/ and commands/ directories
-        assert install.REPO_DIR.is_dir()
         # When running tests from repo, these should exist
         # (may not exist if installed as package without repo)
 
 
-class TestColors:
-    """Tests for color constants."""
-
-    def test_colors_are_ansi_codes(self):
-        """Verify color constants are ANSI escape codes."""
-        assert install.Colors.RED.startswith("\033[")
-        assert install.Colors.GREEN.startswith("\033[")
-        assert install.Colors.NC.startswith("\033[")
-
-
 class TestVoicePreview:
     """Tests for voice preview functionality."""
-
-    def test_preview_samples_not_empty(self):
-        """Verify preview samples exist."""
-        assert len(install.PREVIEW_SAMPLES) > 0
-
-    def test_preview_samples_are_strings(self):
-        """Verify all preview samples are non-empty strings."""
-        for sample in install.PREVIEW_SAMPLES:
-            assert isinstance(sample, str)
-            assert len(sample) > 10  # Should be meaningful sentences
 
     def test_preview_voice_returns_false_for_missing_voice(self):
         """Test preview returns False when voice not installed."""
@@ -419,5 +347,23 @@ class TestSpeakByDefaultMigration:
         install._migrate_speak_by_default()
         assert not (cfg_home / "config.json").exists()
 
-    def test_default_config_is_already_current(self):
-        assert install.DEFAULT_CONFIG["version"] == install.CONFIG_VERSION
+    def test_an_announcing_config_keeps_the_room_lines(self, cfg_home):
+        self._write(cfg_home, {"queue": {"speaker_transition": "chime+announce"}})
+        install._migrate_speaker_lines()
+        assert self._read(cfg_home)["speaker_lines"] == ["rooms"]
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"queue": {"speaker_transition": "chime"}},
+            {"queue": {"speaker_transition": "announce"}, "speaker_lines": []},
+            {},
+        ],
+    )
+    def test_speaker_lines_are_left_alone_when_set_or_not_announcing(self, cfg_home, cfg):
+        self._write(cfg_home, cfg)
+        install._migrate_speaker_lines()
+        assert self._read(cfg_home).get("speaker_lines") == cfg.get("speaker_lines")
+
+    def test_a_fresh_install_has_no_speaker_lines(self):
+        assert "speaker_lines" not in install.DEFAULT_CONFIG

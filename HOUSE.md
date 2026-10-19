@@ -77,7 +77,7 @@ claude-tts-install
 
 # Upgrade the machine that owns the daemon from this checkout: rebuild CLI, deploy
 # hooks/commands, restart the daemon, verify; full log per run in .logs/just/ (gitignored)
-just up
+just up                       # refuses a tree with uncommitted changes; just up --dirty installs it anyway
 just timeline                 # the runs so far, with version and git ref
 # Without just: uv tool install . --force --build && claude-tts-install --upgrade
 # (--build is needed where a uv config disables source builds; harmless elsewhere)
@@ -91,7 +91,7 @@ just release --check        # preflight and gate only; prints the plan
 
 - Sessions are identified by Claude Code project folder name (e.g., `-Users-foo-bar-project`)
 - `default_muted: false` - new sessions speak; `claude-tts mute --all` sets it true and mutes every session, `unmute --all` reverts
-- Use `/tts-mute` and `/tts-unmute` for one session
+- Use `/tts-mute` and `/tts-unmute` for one session; `claude-tts mute|unmute --room ROOM` sets every session of one room (its owner--house--room id and its Claude folder id), named as `hold --let` names it (9.59.0)
 - Each session can have its own persona, speed, and mute state
 - A new prompt in a session drops that session's queued speech that has not started playing (hooks/prompt-submitted.sh on UserPromptSubmit runs `claude-tts supersede --from-hook`, which writes a supersede control; the playing message finishes, other sessions and the bridge are untouched; counted as `stale dropped` in `claude-tts daemon stats`)
 - Every reply a hook accepts is appended, in full and before the filter, to `~/.claude/voice-ledger/<session>.jsonl` with an id the queue message carries; the daemon appends played, cancelled, failed or dropped (with the reason) under that id in `~/.claude-tts/ledger/<session>.outcomes.jsonl`. Two files, two writers, nothing deletes from either (9.43.0). `claude-tts ledger` reads them joined; the 50-row speech ring in handy.py is for the player, this is for the record
@@ -108,8 +108,8 @@ just release --check        # preflight and gate only; prints the plan
 | `/tts-config` | Every stored config key next to the shipped default; `--changed` shows only the ones that differ |
 | `/tts-mute` | Mute this session |
 | `/tts-unmute` | Unmute this session |
-| `/tts-name [name\|reset]` | Show/set the name this session says for itself on a speaker change: with `queue.speaker_transition` `"chime+announce"` (or `"announce"`), the boop then "<name> of <house> house in <room> room" in its own voice, "Friend" until named (9.51.0) |
-| `/tts-focus` | Hold every other friend's voice, this session keeps speaking; `claude-tts hold --let <room>` lets another through |
+| `/tts-name [name\|reset]` | Show/set the name this session says for itself on a speaker change: with `queue.speaker_transition` `"chime+announce"` (or `"announce"`), the boop then the line the config's `speaker_lines` rules make for its id (docs/speaker-lines.md; the shipped `rooms` set says "<name> of house <house> in room <room>", "Friend" until named), else "<name or project> says:"; shows which rule matched and why others were skipped (9.55.0) |
+| `/tts-focus` | Hold every other friend's voice, this session keeps speaking; `claude-tts hold --let <room>` lets another through; bare `claude-tts hold` over a hold only shows it, `--clear` empties the list (9.52.0) |
 | `/tts-kraken` | Release the kraken: everyone speaks again (`claude-tts kraken`); `--drop` drops what the hold kept first (by id, one `dropped (kraken)` ledger line each), so a long hold is not replayed on release |
 | `/tts-speed [value]` | Show/set speech speed (0.5-4.0) |
 | `/tts-persona [name]` | Show/set voice persona; `add <name> --voice <model>` and `remove <name>` edit config.json |
@@ -157,6 +157,7 @@ src/claude_code_tts/
   msgqueue.py              # The queue directory: scan, order, age, trim, PauseLedger, control messages; the only module that names it
   ledger.py                # The voice ledger: every reply a hook accepted, in full and before the filter, plus the daemon's outcome per id; append only
   bridge.py                # Opt-in loopback HTTP bridge (browser pages -> queue, timing marks)
+  speakerline.py           # What a session says when it takes the floor: speaker_lines rules from config, the shipped "rooms" set
   outputdevice.py          # Which device the Mac plays through, from system_profiler; the daemon's poll thread and the status line's words
   install.py               # Installer (hooks, voices, service)
   signature.py             # Voice signatures: tolerant shape of a WAV, compared with tolerances, not by ear
@@ -183,6 +184,7 @@ docs/
   voice-notes.md           # Voice compatibility knowledge base
   hotkey-setup.md          # Pause/resume hotkey setup guide
   http-bridge.md           # HTTP bridge contract (routes, marks, threat model)
+  speaker-lines.md         # The speaker_lines rules: config shape, fields, the shipped sets, the upgrade
   voice-card.md            # The per-session voice card a status line reads: path, fields, freshness, how a reader finds its session
   mlx-backend.md           # mlx-audio backend: enable, pull, persona keys, speed rule, licenses
   what-and-why.md          # What the system does and why, with no how; the fixed points for any redesign
@@ -255,7 +257,9 @@ git add -A && git commit -m "docs: update README"
 Then push: `git push`. To publish a release, `just release` (or `claude-tts release`): it runs the
 gate, creates a signed annotated tag `v<version>` on HEAD whose subject is `v<version> - <summary>` and
 whose body is the commit body (trailers dropped), pushes main and the tag, and waits for `release.yml`
-to publish. `--notes "summary\nbody"` overrides the text, `--check` rehearses. Do not hand-roll tags.
+to publish. It refuses unless the `ci` run for HEAD's exact commit on GitHub completed with success,
+so push main and let ci finish first (9.62.0). `--notes "summary\nbody"` overrides the text,
+`--check` rehearses. Do not hand-roll tags.
 
 **Why this matters:** The version must reflect the exact state of the repo. Every commit changes the repo, so every commit needs a version bump.
 

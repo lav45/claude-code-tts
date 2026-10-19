@@ -241,7 +241,7 @@ class TestLoopOverlapsSynthesisWithPlayback:
             st.join(timeout=15)
             rn.join(timeout=3)
         finally:
-            for pt in patches:
+            for pt in reversed(patches):
                 pt.stop()
 
     def test_second_message_is_synthesized_while_the_first_plays(self, daemon_env):

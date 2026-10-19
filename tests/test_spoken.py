@@ -920,7 +920,7 @@ def _run_loop_until(queue_dir: Path, patches, done) -> None:
         time.sleep(0.1)
     finally:
         stop_loop(runner)
-        for p in patches:
+        for p in reversed(patches):
             p.stop()
 
 

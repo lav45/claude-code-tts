@@ -5,8 +5,8 @@ annotated tag, signed with the maintainer key, whose subject is ``v<version> - <
 whose body becomes the release notes, pushed so ``release.yml`` can verify the signature and
 publish the wheel. This module encodes that once, so nobody reads old tags to learn the shape.
 
-Steps: preflight (main, clean, unreleased version, signing key) -> gate -> tag -> push -> verify
-on GitHub -> wait for the release. ``--check`` stops after the gate and prints the plan.
+Steps: preflight (main, clean, unreleased version, signing key, ci green on HEAD) -> gate -> tag
+-> push -> verify on GitHub -> wait for the release. ``--check`` stops after the gate and prints the plan.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ _TYPE_PREFIX = re.compile(
 _TRAILER = re.compile(r"^([A-Za-z][A-Za-z-]*): \S.*$")
 _VERSION_LINE = re.compile(r'^__version__ = "([^"]+)"', re.MULTILINE)
 
+CI_WORKFLOW = "ci.yml"
 RELEASE_WAIT_S = 300
 POLL_S = 10
 
@@ -223,6 +224,36 @@ def verify_on_github(slug: str, plan: Plan, wait_s: int = RELEASE_WAIT_S) -> str
     return None
 
 
+def ci_problem(repo: Path, slug: str) -> str | None:
+    """Why HEAD's ci run on GitHub does not allow a release, or None when it passed.
+
+    The local gate runs on one machine; ci runs the matrix, macOS included. macOS stayed red
+    through two weeks of releases because nothing here asked, so a release needs a completed,
+    successful ci run for the exact commit it tags, which means main is pushed first.
+    """
+    sha = _git(repo, "rev-parse", "HEAD", check=False)
+    if not shutil.which("gh"):
+        return "gh not found; cannot read HEAD's ci run, and a release needs it green"
+    rc, out = _gh(
+        "run", "list", "--repo", slug, "--workflow", CI_WORKFLOW, "--commit", sha,
+        "--json", "status,conclusion,url", "--limit", "1",
+    )
+    if rc != 0:
+        return f"could not read ci runs for {sha[:7]} on {slug} (gh run list failed)"
+    try:
+        runs = json.loads(out or "[]")
+    except json.JSONDecodeError:
+        return f"could not parse ci runs for {sha[:7]}: {out[:80]!r}"
+    if not runs:
+        return f"no ci run for {sha[:7]} on {slug}; push main, wait for ci, then release"
+    run = runs[0]
+    if run.get("status") != "completed":
+        return f"ci for {sha[:7]} is {run.get('status')}; wait for it: {run.get('url')}"
+    if run.get("conclusion") != "success":
+        return f"ci for {sha[:7]} ended {run.get('conclusion')}; fix main first: {run.get('url')}"
+    return None
+
+
 def print_plan(plan: Plan) -> None:
     print(f"tag:      {plan.tag} on {plan.sha} ({plan.branch})")
     print(f"subject:  {plan.subject}")
@@ -251,6 +282,13 @@ def main(args: list[str] | None = None) -> None:
     repo = _repo_dir()
 
     plan = preflight(repo, parsed.notes)
+    slug = repo_slug(repo)
+    if slug:
+        problem = ci_problem(repo, slug)
+        if problem:
+            plan.problems.append(problem)
+    else:
+        print("origin is not on GitHub; no ci run to check")
     print_plan(plan)
     if plan.problems:
         sys.exit(1)
@@ -271,7 +309,6 @@ def main(args: list[str] | None = None) -> None:
     create_tag(repo, plan)
     print("\n== push", flush=True)
     push(repo, plan)
-    slug = repo_slug(repo)
     if parsed.no_wait or not slug:
         print(f"\n{plan.tag} pushed; release.yml publishes it once the tag verifies")
         return

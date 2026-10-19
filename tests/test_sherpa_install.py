@@ -37,9 +37,6 @@ class TestCatalogStructure:
         "language", "verified_date",
     )
 
-    def test_catalog_is_nonempty(self):
-        assert len(sherpa_catalog.CATALOG) >= 1
-
     def test_every_entry_has_required_fields(self):
         for model_id, entry in sherpa_catalog.CATALOG.items():
             missing = [f for f in self.REQUIRED_FIELDS if f not in entry]

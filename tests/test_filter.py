@@ -730,3 +730,39 @@ class TestRedactSecretsInFilters:
         result = filter_text(text)
         assert "SuperSecret" not in result
         assert "Done." in result
+
+
+class TestPullRequestAndIssueNumbers:
+    """JMO at 2x could not catch "hash one seven nine five"; a number is read in pairs."""
+
+    def test_bare_hash_number_is_a_number_in_pairs(self):
+        assert filter_text("widgets #1795 is green.") == "widgets number seventeen ninety-five is green."
+
+    def test_a_word_before_the_hash_names_the_kind(self):
+        assert filter_text("PR #1795 and issue #4268.") == (
+            "pull request seventeen ninety-five and issue forty-two sixty-eight."
+        )
+        assert filter_text("pull request #42 merged") == "pull request forty-two merged"
+
+    def test_a_github_link_names_the_kind_and_its_url_goes(self):
+        text = "See [widgets #1795](https://github.com/acme/widgets/pull/1795) and [#42](https://github.com/o/r/issues/42)."
+        assert filter_text(text) == "See widgets pull request seventeen ninety-five and issue forty-two."
+
+    def test_a_link_with_the_kind_in_its_text_says_it_once(self):
+        text = "[PR #1795](https://github.com/acme/widgets/pull/1795) is up"
+        assert filter_text(text) == "pull request seventeen ninety-five is up"
+
+    def test_numbers_read_the_way_a_person_reads_them(self):
+        cases = {"7": "seven", "42": "forty-two", "742": "seven forty-two", "1800": "eighteen hundred",
+                 "1805": "eighteen oh five", "15616": "one fifty-six sixteen", "100": "one hundred",
+                 "10": "ten", "3605": "thirty-six oh five"}
+        for digits, words in cases.items():
+            assert filter_text(f"#{digits}") == f"number {words}", digits
+
+    def test_hashes_that_are_not_numbers_are_left_alone(self):
+        for text in ("Post in #byoc-pr today.", "Line page#12 here.", "Commit #1a2b3c here.",
+                     "A 12-hour #12-hour run.", "Use &#38; there."):
+            assert "number" not in filter_text(text), text
+
+    def test_a_heading_is_not_a_number(self):
+        assert filter_text("## 42 things") == "42 things"

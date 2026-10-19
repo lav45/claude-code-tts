@@ -244,7 +244,7 @@ def _run(daemon_env, player: Path, stop_when, during=None) -> list[str]:
         st.join(timeout=15)
         rn.join(timeout=3)
     finally:
-        for pt in patches:
+        for pt in reversed(patches):
             pt.stop()
     lines = daemon_env["log_file"].read_text().splitlines()
     return [ln.split("Speaking for ", 1)[1].split(" ", 1)[0] for ln in lines if "Speaking for " in ln]

@@ -166,6 +166,58 @@ class TestMain:
         assert git(repo, "tag", "-l", "v1.3.0") == ""
 
 
+class TestCiProblem:
+    """A release needs a completed, successful ci run for the exact commit it tags."""
+
+    @pytest.fixture
+    def gh_runs(self, monkeypatch):
+        calls = []
+
+        def answer(rc, out):
+            def fake_gh(*args):
+                calls.append(args)
+                return rc, out
+            monkeypatch.setattr(rel, "_gh", fake_gh)
+            monkeypatch.setattr(rel.shutil, "which", lambda _n: "/usr/bin/gh")
+            return calls
+        return answer
+
+    def test_green_run_on_head_passes(self, repo, gh_runs):
+        calls = gh_runs(0, '[{"status":"completed","conclusion":"success","url":"u"}]')
+        assert rel.ci_problem(repo, "o/r") is None
+        args = calls[0]
+        assert args[args.index("--commit") + 1] == git(repo, "rev-parse", "HEAD")
+        assert args[args.index("--workflow") + 1] == "ci.yml"
+
+    @pytest.mark.parametrize(("rc", "out", "words"), [
+        (0, '[{"status":"completed","conclusion":"failure","url":"u"}]', "ended failure"),
+        (0, '[{"status":"in_progress","conclusion":"","url":"u"}]', "is in_progress"),
+        (0, "[]", "no ci run"),
+        (1, "", "gh run list failed"),
+        (0, "not json", "could not parse"),
+    ])
+    def test_anything_but_green_is_a_problem(self, repo, gh_runs, rc, out, words):
+        gh_runs(rc, out)
+        problem = rel.ci_problem(repo, "o/r")
+        assert problem is not None and words in problem
+
+    def test_no_gh_is_a_problem(self, repo, monkeypatch):
+        monkeypatch.setattr(rel.shutil, "which", lambda _n: None)
+        assert "gh not found" in (rel.ci_problem(repo, "o/r") or "")
+
+    def test_red_ci_exits_before_the_gate(self, repo, gh_runs):
+        set_version(repo, "1.3.0")
+        git(repo, "commit", "-q", "-am", "feat: streaming")
+        git(repo, "config", "user.signingkey", "DEADBEEF")
+        git(repo, "remote", "add", "origin", "https://github.com/o/r.git")
+        gh_runs(0, '[{"status":"completed","conclusion":"failure","url":"u"}]')
+        with patch.object(rel, "_repo_dir", return_value=repo), \
+             patch.object(rel, "run_gate") as gate, pytest.raises(SystemExit) as e:
+            rel.main(["--check"])
+        assert e.value.code == 1
+        gate.assert_not_called()
+
+
 class TestVerifyOnGithub:
     """The wait loop returns the release URL only once GitHub has published it."""
 

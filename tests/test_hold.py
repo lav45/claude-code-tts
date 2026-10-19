@@ -211,7 +211,7 @@ class TestLoopLetsRoomsThrough:
             assert _wait_for(lambda: "a waits" in spoken)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         log = (state_dir / "daemon.log").read_text()
         assert "letting b through" in log
@@ -251,7 +251,7 @@ class TestLoopLetsRoomsThrough:
             assert _wait_for(lambda: "a was cut off" in spoken)
         finally:
             stop_loop(runner)
-            for p in patches:
+            for p in reversed(patches):
                 p.stop()
         assert "put back in the queue" in (state_dir / "daemon.log").read_text()
 
@@ -261,18 +261,52 @@ class TestCli:
         from claude_code_tts import cli
 
         monkeypatch.setattr(cli, "get_session_id", lambda: "alice--claude--claude-code-tts")
-        cli.cmd_hold(argparse.Namespace(let=None, me=True))
+        cli.cmd_hold(argparse.Namespace(let=None, me=True, clear=False))
         s = st.read_playback_state()
         assert s["paused"] and s["let_through"] == ["alice--claude--claude-code-tts"]
         assert "Letting through: tts" in capsys.readouterr().out
-        cli.cmd_hold(argparse.Namespace(let=["jmo"], me=False))
+        cli.cmd_hold(argparse.Namespace(let=["jmo"], me=False, clear=False))
         assert st.read_playback_state()["let_through"] == ["alice--claude--claude-code-tts", "jmo"]
-        cli.cmd_hold(argparse.Namespace(let=None, me=False))
+        cli.cmd_hold(argparse.Namespace(let=None, me=False, clear=True))
         assert "let_through" not in st.read_playback_state()
-        assert "Nobody is let through" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Nobody is let through" in out
+        assert "No longer let through: alice--claude--claude-code-tts, jmo" in out
         cli.cmd_kraken(argparse.Namespace())
         assert st.read_playback_state()["paused"] is False
         assert "kraken is released" in capsys.readouterr().out
+
+    def test_bare_hold_over_a_hold_is_a_question(self, state_file, capsys):
+        """A bare `hold` typed as "who is held" once cleared a --let set two days before."""
+        from claude_code_tts import cli
+
+        hold(["jmo"])
+        before = st.read_playback_state()
+        cli.cmd_hold(argparse.Namespace(let=None, me=False, clear=False))
+        assert st.read_playback_state() == before
+        out = capsys.readouterr().out
+        assert "Already held, nothing changed. Letting through: jmo" in out
+        assert "No longer let through" not in out
+
+    def test_bare_hold_holds_when_nobody_holds_and_over_a_mic_hold(self, state_file, capsys):
+        from claude_code_tts import cli
+
+        cli.cmd_hold(argparse.Namespace(let=None, me=False, clear=False))
+        assert st.read_playback_state()["paused_by"] == "user"
+        release()
+        st.set_paused(True, "mic")
+        cli.cmd_hold(argparse.Namespace(let=None, me=False, clear=False))
+        s = st.read_playback_state()
+        assert s["paused_by"] == "user" and s["mic_held"]
+        assert "Already held" not in capsys.readouterr().out
+
+    def test_clear_with_let_leaves_only_the_rooms_named(self, state_file, capsys):
+        from claude_code_tts import cli
+
+        hold(["jmo", "notes"])
+        cli.cmd_hold(argparse.Namespace(let=["k8s"], me=False, clear=True))
+        assert st.read_playback_state()["let_through"] == ["k8s"]
+        assert "No longer let through: jmo, notes" in capsys.readouterr().out
 
     def test_status_names_the_let_through(self, state_file, monkeypatch, capsys):
         from claude_code_tts import cli

@@ -56,7 +56,7 @@ from claude_code_tts.config import (
 from claude_code_tts.handy import AnalyzerThread, save_speech_wav
 from claude_code_tts.level import normalize as normalize_level
 from claude_code_tts.mic_watcher import MicWatcher
-from claude_code_tts.msgqueue import PauseLedger, next_speakable, play_order, text_of
+from claude_code_tts.msgqueue import NOW_LANE, PauseLedger, next_speakable, play_order, text_of
 from claude_code_tts.outputdevice import OutputDeviceWatch
 from claude_code_tts.state import (
     UNSET,
@@ -173,7 +173,10 @@ def describe_voice(
         speaker = int(persona_config.get("speaker_sherpa", -1))
         return f"sherpa:{sherpa}" + (f"#{speaker}" if speaker >= 0 else "")
     voice, fell_back = resolve_piper_voice(persona, persona_config)
-    return f"{voice} (fallback)" if fell_back else voice
+    if fell_back:
+        return f"{voice} (fallback)"
+    speaker = int(persona_config.get("speaker_piper", -1))
+    return f"{voice}#{speaker}" if speaker >= 0 else voice
 
 
 # Global state
@@ -182,13 +185,60 @@ _daemon_mode = False
 
 # The session whose message is playing or about to play; the hold is judged against it
 # (state.may_play), so a room a person let through keeps speaking while the rest wait.
-_SPEAKING: dict[str, str] = {"session": ""}
+_SPEAKING: dict[str, Any] = {"session": "", "lane": "", "queued_at": None}
+
+# Now blocks the bridge has queued ("asked") and how many of those the loop has seen settled
+# ("settled"). While asked is ahead, whatever plays outside the now lane is cut off the way a
+# pause cuts it, and the loop plays the now blocks before resuming it. The loop moves settled
+# up to the count it read before a scan that found no now block it may play, so a click that
+# lands during that scan keeps asked ahead: counters, not a flag, because the bridge thread
+# and the loop thread both touch them with no lock.
+_PREEMPT: dict[str, int] = {"asked": 0, "settled": 0}
+
+
+def request_preempt() -> None:
+    """A now block is in the queue: cut off what plays, unless it is a now block itself."""
+    _PREEMPT["asked"] += 1
+
+
+def _preempt_pending() -> bool:
+    return _PREEMPT["asked"] > _PREEMPT["settled"]
+
+
+def _speaking(msg: dict) -> None:
+    """Name the message playing or about to play; the hold and the preempt judge it."""
+    _SPEAKING["session"] = str(msg.get("session_id", ""))
+    _SPEAKING["lane"] = str(msg.get("lane") or "")
+    _SPEAKING["queued_at"] = msg.get("timestamp")
+
+
+def _may_play(state: dict, msg: dict) -> bool:
+    return may_play(state, str(msg.get("session_id", "")), str(msg.get("lane") or ""), msg.get("timestamp"))
 
 
 def held_now(state: dict | None = None) -> bool:
-    """Whether the hold applies to what is playing or about to play."""
+    """Whether the hold, or a now block waiting, stops what is playing or about to play."""
     s = read_playback_state() if state is None else state
-    return not may_play(s, _SPEAKING["session"])
+    if _preempt_pending() and _SPEAKING["lane"] != NOW_LANE:
+        return True
+    return not may_play(s, _SPEAKING["session"], _SPEAKING["lane"], _SPEAKING["queued_at"])
+
+
+def take_stop_read(job_id: str | None, state: dict | None = None) -> bool:
+    """Whether a stop_read in playback.json names this job; marks it cancelled and clears it.
+
+    The pause hotkey writes it for a click playing through a hold (state.stop_read); from
+    here on the read ends as a page's /stop ends it.
+    """
+    if not job_id:
+        return False
+    s = read_playback_state() if state is None else state
+    if s.get("stop_read") != job_id:
+        return False
+    write_playback_state(stop_read=None)
+    JOBS.update(job_id, state="cancelled")
+    log(f"Stopped the read {job_id} that played through the hold; the hold stays")
+    return True
 # log() is called from the synth, bridge and mic-watcher threads too.
 _log_lock = threading.Lock()
 
@@ -376,7 +426,7 @@ def let_through_note(state: dict) -> str:
 
 
 # What a message carries only while it is the one on deck; the queue file never has these.
-_ON_DECK_ONLY = ("audio_position", "sentence_index", "audio_file", "played_s", "parts", "started_at")
+_ON_DECK_ONLY = ("audio_position", "sentence_index", "audio_file", "played_s", "parts", "started_at", "preempted_at")
 
 
 def requeue_interrupted(interrupted: dict) -> None:
@@ -617,9 +667,12 @@ def _generate_speech_unleveled(
         )
         kokoro_voice = kokoro_blend = voice_sherpa = ""
     pitch_filter = persona_config.get("pitch_filter", "")
-    voice_name, _ = resolve_piper_voice(
+    voice_name, fell_back = resolve_piper_voice(
         persona, persona_config, other_engine=bool(voice_sherpa or voice_mlx or kokoro_voice)
     )
+    # A speaker id belongs to the persona's own model; the default standing in has no such speaker.
+    speaker_piper = int(persona_config.get("speaker_piper", -1))
+    piper_speaker = speaker_piper if speaker_piper >= 0 and not fell_back else None
     voice_path = VOICES_DIR / f"{voice_name}.onnx"
 
     # Tone-aware generation parameters.
@@ -643,6 +696,7 @@ def _generate_speech_unleveled(
         lang_mlx=lang_mlx,
         speed=speed,
         speed_method=speed_method,
+        speaker=piper_speaker,
         output_path=output_file,
         pitch_filter=pitch_filter,
         **tone_kwargs,
@@ -745,6 +799,7 @@ def daemon_play_audio(
     if not player:
         log("No audio player available", "ERROR")
         return (False, False, 0.0)
+    take_stop_read(job_id)
     if JOBS.state(job_id) == "cancelled":
         # A /stop landed between the caller's last look and here: start nothing.
         return (False, False, 0.0)
@@ -781,6 +836,7 @@ def daemon_play_audio(
                     f"Still playing (PID {proc.pid}, {now - start_time:.0f}s, paused={state.get('paused')})"
                 )
                 last_status_log = now
+            take_stop_read(job_id, state)
             if JOBS.cancelled(job_id):
                 elapsed = time.monotonic() - start_time
                 log(f"Audio cancelled by bridge (PID {proc.pid}) after {elapsed:.1f}s")
@@ -960,6 +1016,7 @@ def play_sentences(
         """The stream's end if a stop, pause or shutdown is waiting, else None."""
         # A bridge /stop between plays marks the job cancelled without a cancel
         # request (there is no player to kill); JOBS.cancelled checks both.
+        take_stop_read(job_id)
         if JOBS.cancelled(job_id):
             return cancelled(i)
         if held_now() or _shutdown_requested:
@@ -1043,14 +1100,17 @@ def stream_message(
 
     msg_info = dict(msg_info)
     msg_info["sentence_index"] = start_index
-    # Before current_message names it: a /stop that cannot see it as current
-    # flushes its queue file and marks it cancelled, and that must stand.
+    # On deck before the job reads "synthesizing", as the whole-message path does: a hotkey
+    # press that sees the job synthesizing must find the click it stops
+    # (state.click_read_through_hold), not release every room. A /stop in between sees it
+    # current with no player, clears it and marks it cancelled, and update_live refuses.
+    write_playback_state(current_message=msg_info)
     if not JOBS.update_live(job_id, state="synthesizing", speed=speed):
         log(f"Cancelled by bridge before speaking: {project}")
+        clear_current_message()
         if msg_file is not None:
             msg_file.unlink(missing_ok=True)
         return
-    write_playback_state(current_message=msg_info)
     if start_index:
         log(f"Resuming at sentence {start_index + 1}/{n}: {sentences[start_index][:50]}...")
 
@@ -1135,19 +1195,13 @@ def stream_message(
 def speaker_line(msg: dict) -> str:
     """The words a session says for itself when it takes the floor.
 
-    A room (session id owner--house--room) says "<name> of <house> house in <room> room", the
-    name being the one the session chose with `claude-tts name`, "Friend" until it has one. A
-    session that is not a room keeps the old "<project> says:", with its name in place of the
-    project when it has one.
+    The config's `speaker_lines` rules decide it, read at each change so an edit is heard at the
+    next one (speakerline.py has the rule shape and the shipped "rooms" set). With no rule
+    matching, "<name or project> says:", the line before 9.51.0.
     """
-    session_id = str(msg.get("session_id") or "")
-    name = str(msg.get("name") or "").strip()
-    house = daemon_state.house_tag(session_id)
-    if "--" in session_id:
-        room = daemon_state.room_tag(session_id)
-        who = name or "Friend"
-        return f"{who} of {house} house in {room} room" if house else f"{who} in {room} room"
-    return f"{name or msg.get('project') or 'unknown'} says:"
+    from claude_code_tts.speakerline import speak_line
+
+    return speak_line(msg, load_raw_config().get("speaker_lines")).line
 
 
 def speaker_transition(
@@ -1164,7 +1218,8 @@ def speaker_transition(
 
     "chime" is the boop alone; "announce" the words (who, or "<project> says:" when the caller
     gave none) in the new speaker's own voice; "chime+announce" the boop and then the words
-    (asked for 2026-10-08: "X of Y house in Z room" along with the boop); "none" is silence.
+    (asked for 2026-10-08: "X of Y house in Z room" along with the boop; since
+    9.54.0 the word comes first, "X of house Y in room Z"); "none" is silence.
     """
     if transition in ("chime", "chime+announce"):
         log(f"Speaker change: {last_speaker} -> {speaker_key}")
@@ -1377,6 +1432,12 @@ def drop_all_requested(messages: list[dict]) -> list[dict]:
         _dropped(m, "kraken")
 
     kept = msgqueue.apply_drop_all(messages, log=log, on_removed=_drop)
+    preempted = read_playback_state().get("preempted_message")
+    if preempted:
+        # A message a now block cut off is half-played too: it would resume after the drop.
+        write_playback_state(preempted_message=None)
+        _dropped(preempted, "kraken")
+        log(f"Drop-all: the message from {preempted.get('project', 'unknown')} a now block cut off is dropped too")
     if interrupted:
         if str(interrupted.get("id") or "") in dropped_ids:
             log("Drop-all: the interrupted message was also queued; one outcome written")
@@ -1528,6 +1589,11 @@ def prepare_message(msg: dict, raw_config: dict) -> PreparedMessage:
         "lang_mlx": lang_mlx,
         "pitch_filter": msg.get("pitch_filter", ""),
     }
+    if msg.get("lane"):
+        # A cut-off now block resumes as one, and a cut-off room is not taken for a now block;
+        # the queue time is what a hold is judged against (state.may_play).
+        current_msg_info["lane"] = str(msg["lane"])
+        current_msg_info["timestamp"] = msg.get("timestamp")
     if job_id:
         current_msg_info["id"] = job_id
         current_msg_info["source"] = msg.get("source")
@@ -1748,6 +1814,7 @@ def daemon_loop(lockpick: bool = False) -> None:
             mic_hold_max_s=lambda: float(load_raw_config().get("mic_pause_max_s", MIC_PAUSE_MAX_S)),
             set_let_through=hold,
             read_output_device=read_output_device,
+            preempt=request_preempt,
         )
         if not bridge.start(http_config):
             bridge = None
@@ -1819,10 +1886,29 @@ def daemon_loop(lockpick: bool = False) -> None:
         stale_fields.append("current_message")
     elif interrupted_recently and not is_respawn:
         log("Resuming the message the previous daemon stopped in")
+    # A message a now block cut off resumes on the same terms: only when it was cut recently.
+    preempted = startup_state.get("preempted_message")
+    if isinstance(preempted, dict) and not is_respawn:
+        try:
+            cut_at = float(preempted.get("preempted_at") or 0)
+        except (TypeError, ValueError):
+            cut_at = 0.0
+        if time.time() - cut_at > RESUME_AFTER_RESTART_S:
+            stale_fields.append("preempted_message")
+    if startup_state.get("stop_read"):
+        # A stop for a read the previous daemon played; no job here carries that id. When it
+        # names the message on deck, the person asked for that read to end: it does not resume.
+        stale_fields.append("stop_read")
+        on_deck = startup_state.get("current_message")
+        if isinstance(on_deck, dict) and on_deck.get("id") == startup_state["stop_read"]:
+            if "current_message" not in stale_fields:
+                stale_fields.append("current_message")
     if stale_fields:
         write_playback_state(
             audio_pid=None,
             current_message=None if "current_message" in stale_fields else UNSET,
+            preempted_message=None if "preempted_message" in stale_fields else UNSET,
+            stop_read=None if "stop_read" in stale_fields else UNSET,
             paused=False if "mic-pause" in stale_fields else None,
             paused_by=None if "mic-pause" in stale_fields else UNSET,
         )
@@ -1932,6 +2018,7 @@ def daemon_loop(lockpick: bool = False) -> None:
                         f"Unloaded {name} worker: unused for {idle_s / 60:.0f} min; it reloads on the next message"
                     )
             state = read_playback_state()
+            preempt_seen = _PREEMPT["asked"]
             was_paused = ledger.paused
             ledger.mark(bool(state.get("paused")))
             letting_through = False
@@ -1959,8 +2046,12 @@ def daemon_loop(lockpick: bool = False) -> None:
                     set_paused(False)
                     continue
                 scanned = drop_all_requested(get_queue_messages())
-                allowed = [m for m in scanned if may_play(state, str(m.get("session_id", "")))]
-                if not allowed:
+                allowed = [m for m in scanned if _may_play(state, m)]
+                # A message cut off on deck that the hold lets play (a click a recording paused,
+                # a room let through) resumes with nothing queued; else it waits for a release.
+                on_deck_msg = state.get("current_message")
+                on_deck_may = isinstance(on_deck_msg, dict) and _may_play(state, on_deck_msg)
+                if not allowed and not on_deck_may:
                     time.sleep(poll_interval)
                     continue
                 letting_through = True
@@ -1977,9 +2068,32 @@ def daemon_loop(lockpick: bool = False) -> None:
                 enforce_max_depth(config["max_depth"], ledger, queued)
             JOBS.evict_finished()
 
+            # A now block plays first. What it cut off waits in preempted_message, out of
+            # current_message (which the now block takes), and resumes when no now block it
+            # may play is left. The preempt is settled by a scan that found no now block.
+            now_waiting = any(str(m.get("lane") or "") == NOW_LANE for m in queued)
+            if _preempt_pending() and not now_waiting:
+                _PREEMPT["settled"] = max(_PREEMPT["settled"], preempt_seen)
+
             # Check for interrupted message to replay first
-            interrupted = get_interrupted_message()
-            if interrupted and letting_through and not may_play(state, str(interrupted.get("session_id", ""))):
+            on_deck = read_playback_state()
+            interrupted = on_deck.get("current_message")
+            if interrupted and now_waiting and str(interrupted.get("lane") or "") != NOW_LANE:
+                if on_deck.get("preempted_message"):
+                    requeue_interrupted(interrupted)  # cut twice before it resumed: replays whole
+                else:
+                    # One write moves it, so a crash leaves it in one place or the other.
+                    write_playback_state(current_message=None, preempted_message={**interrupted, "preempted_at": time.time()})
+                    log(f"Cut off {interrupted.get('project', 'unknown')} for a now block; it resumes after")
+                interrupted = None
+            elif interrupted:
+                write_playback_state(current_message=None)  # taken, as get_interrupted_message takes it
+            elif not interrupted and not now_waiting:
+                interrupted = read_playback_state().get("preempted_message") or None
+                if interrupted:
+                    write_playback_state(preempted_message=None)
+                    log(f"Resuming {interrupted.get('project', 'unknown')}, cut off by a now block")
+            if interrupted and letting_through and not _may_play(state, interrupted):
                 # A held room's half-played message goes back to the queue, in its place, so a
                 # room let through can speak now; it replays from its start on release.
                 if queued:
@@ -1988,7 +2102,7 @@ def daemon_loop(lockpick: bool = False) -> None:
             if interrupted:
                 prefetch.wait()  # never synthesize on this thread while a prefetch runs
                 session_id = interrupted.get("session_id", "unknown")
-                _SPEAKING["session"] = str(session_id)
+                _speaking(interrupted)
                 persona = interrupted.get("persona", "claude-prime")
                 persona_config = get_persona_config(persona)
                 i_speed = interrupted.get("speed", persona_config.get("speed", 2.0))
@@ -2054,6 +2168,8 @@ def daemon_loop(lockpick: bool = False) -> None:
                         )
                         clear_current_message()
                         audio_file.unlink(missing_ok=True)
+                        _outcome(interrupted, "played", played_s=round(prev_audio_pos, 1), near_end=True)
+                        JOBS.update(i_job_id, state="done")
                         continue
 
                     # Resume with rewind (scaled to playback speed)
@@ -2127,7 +2243,7 @@ def daemon_loop(lockpick: bool = False) -> None:
                 continue
 
             msg = messages[0]
-            _SPEAKING["session"] = str(msg.get("session_id", ""))
+            _speaking(msg)
             msg_file = msg["_file"]
             if not msg_file.exists():
                 continue  # flushed (a bridge /stop) since this pass's scan; the next pass rescans
@@ -2227,9 +2343,13 @@ def daemon_loop(lockpick: bool = False) -> None:
                     "WARN",
                 )
                 prefetched = False
+            # On deck before synthesis, as in stream_message: a hotkey press during it must
+            # find the click it is stopping (state.click_read_through_hold), not release all.
+            write_playback_state(current_message=current_msg_info)
             if not prefetched:
                 if not JOBS.update_live(job_id, state="synthesizing"):
                     log(f"Cancelled by bridge before speaking: {project}")
+                    clear_current_message()
                     msg_file.unlink(missing_ok=True)
                     continue
                 ok, marks = synthesize_prepared(p)
@@ -2238,6 +2358,7 @@ def daemon_loop(lockpick: bool = False) -> None:
                     f"Failed to generate speech for message from {project}: {audio_last_error()}",
                     "ERROR",
                 )
+                clear_current_message()
                 audio_file.unlink(missing_ok=True)
                 msg_file.unlink(missing_ok=True)
                 unplayed_claim = None
@@ -2254,6 +2375,7 @@ def daemon_loop(lockpick: bool = False) -> None:
             if JOBS.state(job_id) == "cancelled":
                 # Stopped while it synthesized; a pause now must not revive it.
                 log(f"Cancelled by bridge before speaking: {project}")
+                clear_current_message()
                 audio_file.unlink(missing_ok=True)
                 msg_file.unlink(missing_ok=True)
                 continue
@@ -2287,7 +2409,7 @@ def daemon_loop(lockpick: bool = False) -> None:
             if config.get("prefetch_next", True):
                 now_state = read_playback_state()
                 nxt = next_speakable(
-                    play_order([m for m in get_queue_messages() if may_play(now_state, str(m.get("session_id", "")))]),
+                    play_order([m for m in get_queue_messages() if _may_play(now_state, m)]),
                     msg_file,
                 )
                 if nxt is not None and (speech_unit() != "sentence" or nxt.get("want_marks")):
@@ -2368,7 +2490,10 @@ def daemon_loop(lockpick: bool = False) -> None:
         except Exception as e:
             log(f"Error in daemon loop: {e}", "ERROR")
             if unplayed_claim is not None:
-                unplayed_claim.release()  # the file is still queued; the next pass plays it
+                # Never played, and its file is still queued: the next pass plays it from there,
+                # so the on-deck copy (written before synthesis) must not replay it as well.
+                clear_current_message()
+                unplayed_claim.release()
             time.sleep(1)
 
     prefetch.discard()  # a synthesis for a message nobody will play now; its WAV goes too

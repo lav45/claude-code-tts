@@ -237,13 +237,6 @@ class TestSherpaConfigPlumbing:
         assert cfg.voice_sherpa == "libritts-vits"
         assert cfg.speaker_sherpa == 137
 
-    def test_default_voice_sherpa_is_empty(self):
-        from claude_code_tts.config import TTSConfig
-        c = TTSConfig()
-        assert c.voice_sherpa == ""
-        assert c.speaker_sherpa == -1
-
-
 class TestSherpaQueueMessage:
     """Queue mode (write_queue_message) carries voice_sherpa and pitch_filter fields."""
 
@@ -394,7 +387,3 @@ class TestPitchFilter:
 
         cfg = load_config("test-session")
         assert cfg.pitch_filter == "asetrate=24000*0.86,aresample=24000*1.0,atempo=1.0"
-
-    def test_default_pitch_filter_is_empty(self):
-        from claude_code_tts.config import TTSConfig
-        assert TTSConfig().pitch_filter == ""

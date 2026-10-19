@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -222,6 +224,34 @@ def test_speak_writes_queue_file_and_job(server: Bridge, tts_home: Path) -> None
     assert "updated_at" not in job
 
 
+def test_speak_for_a_room_announces_the_room(server: Bridge, tts_home: Path) -> None:
+    """A bridge client speaking for a room says that room's line, not "<source>:<label> says:"."""
+    from claude_code_tts.speakerline import speak_line
+
+    status, _, _ = call(
+        server,
+        "POST",
+        "/speak",
+        {"text": "Hi.", "source": "codex-tts", "label": "Codex", "session": "sbx--gpt--house-gpt", "name": "Aster"},
+    )
+    assert status == 202
+    msg = json.loads(next((tts_home / "queue").glob("*.json")).read_text())
+    assert msg["session_id"] == "sbx--gpt--house-gpt"
+    assert msg["source"] == "codex-tts"
+    assert speak_line(msg, ["rooms"]).line == "Aster of house gpt in room house-gpt"
+
+
+@pytest.mark.parametrize(
+    "session", ["../x--y", "a--b/c", "browser", "a---b", "a--b--c--d--e--f--g", "a--b c", "é--b"]
+)
+def test_speak_refuses_a_session_that_is_not_a_room(server: Bridge, session: str) -> None:
+    assert call(server, "POST", "/speak", {"text": "x", "session": session})[0] == 400
+
+
+def test_speak_refuses_a_long_name(server: Bridge) -> None:
+    assert call(server, "POST", "/speak", {"text": "x", "session": "a--b--c", "name": "n" * 65})[0] == 400
+
+
 def test_speak_validation(server: Bridge) -> None:
     assert call(server, "POST", "/speak", {"text": ""})[0] == 400
     assert call(server, "POST", "/speak", {"text": "x", "persona": "nope"})[0] == 400
@@ -314,6 +344,40 @@ def test_speak_background_lane_is_written_and_validated(server: Bridge, tts_home
     assert status == 400 and body["lane"] == "urgent"
 
 
+def test_speak_now_lane_is_written_and_tells_the_daemon(server: Bridge, tts_home: Path) -> None:
+    calls: list[int] = []
+    server._server.preempt = lambda: calls.append(1)  # type: ignore[union-attr]
+    status, body, _ = call(server, "POST", "/speak", {"text": "clicked", "lane": "now"})
+    assert status == 202
+    assert [json.loads(f.read_text())["lane"] for f in (tts_home / "queue").glob("*.json")] == ["now"]
+    assert calls == [1]
+
+
+def test_stop_cancels_a_read_a_click_cut_off(server: Bridge, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page's background read cut off by its own click must not resume after Stop."""
+    writes: list[dict] = []
+    monkeypatch.setattr(bridge_mod, "write_playback_state", lambda **kw: writes.append(kw))
+    JOBS.create("bg1", source="hear")
+    server.fake.state["preempted_message"] = {"id": "bg1", "source": "hear", "text": "x"}  # type: ignore[attr-defined]
+    _, body, _ = call(server, "POST", "/stop", {"source": "hear"})
+    assert body["stopped_current"] is True
+    assert writes == [{"preempted_message": None}]
+    assert JOBS.state("bg1") == "cancelled"
+    writes.clear()
+    server.fake.state["preempted_message"] = {"id": "r1", "source": "other", "text": "x"}  # type: ignore[attr-defined]
+    call(server, "POST", "/stop", {"source": "hear"})
+    assert writes == [], "another source's cut-off message is left alone"
+
+
+def test_speak_now_lane_under_a_recording_waits_without_a_cut(server: Bridge, tts_home: Path) -> None:
+    calls: list[int] = []
+    server._server.preempt = lambda: calls.append(1)  # type: ignore[union-attr]
+    server.fake.state.update(paused=True, paused_by="mic", paused_since=1.0)  # type: ignore[attr-defined]
+    status, _, _ = call(server, "POST", "/speak", {"text": "clicked", "lane": "now"})
+    assert status == 202
+    assert calls == [], "nothing may play during a recording, so nothing is cut for it"
+
+
 def test_jobs_listed_by_source_oldest_first(server: Bridge) -> None:
     _, a, _ = call(server, "POST", "/speak", {"text": "one", "source": "page"})
     _, b, _ = call(server, "POST", "/speak", {"text": "two", "source": "page"})
@@ -389,6 +453,29 @@ def test_pause_post_sets_and_reports_no_change(server: Bridge) -> None:
     assert status == 400
 
 
+def test_pause_during_a_click_through_a_hold_stops_the_read_and_keeps_the_hold(
+    server: Bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JMO, D112 B: Pause on a page, like the hotkey, stops the read instead of releasing everyone."""
+    stopped: list[str] = []
+    monkeypatch.setattr(bridge_mod, "stop_read", stopped.append)
+    server.fake.state.update(  # type: ignore[attr-defined]
+        paused=True,
+        paused_by="user",
+        paused_since=100.0,
+        current_message={"id": "j1", "session_id": "browser", "lane": "now", "timestamp": 101.0, "source": "hear"},
+    )
+    for body in ({}, {"paused": True}):
+        status, reply, _ = call(server, "POST", "/pause", body)
+        assert status == 200
+        assert reply["paused"] is True and reply["changed"] is False and reply["stopped_read"] == "j1"
+    assert stopped == ["j1", "j1"]
+    assert server.fake.state["paused"] is True  # type: ignore[attr-defined]
+    status, reply, _ = call(server, "POST", "/pause", {"paused": False})
+    assert reply["paused"] is False and "stopped_read" not in reply, "an explicit release still releases"
+    assert stopped == ["j1", "j1"]
+
+
 def test_pause_resume_releases_a_mic_hold(server: Bridge) -> None:
     server.fake.state.update(paused=True, paused_by="mic")  # type: ignore[attr-defined]
     status, body, _ = call(server, "POST", "/pause", {"paused": False})
@@ -401,6 +488,68 @@ def test_pause_needs_token(server: Bridge) -> None:
     status, _, _ = call(server, "POST", "/pause", {}, token=None)
     assert status == 401
     assert server.fake.state["paused"] is False  # type: ignore[attr-defined]
+
+
+def _queue_hook_message(queue: Path, msg_id: str, ts: float) -> None:
+    queue.mkdir(parents=True, exist_ok=True)
+    (queue / f"{ts}_{msg_id}.json").write_text(
+        json.dumps({"id": msg_id, "timestamp": ts, "text": msg_id, "session_id": "a--claude--tts"})
+    )
+
+
+def test_queue_drop_drops_everything_and_keeps_the_hold(server: Bridge, tts_home: Path) -> None:
+    queue = tts_home / "queue"
+    _queue_hook_message(queue, "h1", 1.0)
+    _queue_hook_message(queue, "h2", 2.0)
+    page = write_bridge_message("page", persona="p", persona_config={}, source="hear")
+    server.fake.state.update(paused=True, paused_by="user")  # type: ignore[attr-defined]
+    removed: list[str] = []
+    stop = threading.Event()
+
+    def daemon_pass() -> None:
+        # The daemon's own step: drop-all controls are taken at the top of every pass.
+        while not stop.is_set():
+            mq.apply_drop_all(mq.scan(), on_removed=lambda m: removed.append(str(m["id"])))
+            time.sleep(0.02)
+
+    t = threading.Thread(target=daemon_pass)
+    t.start()
+    try:
+        status, body, _ = call(server, "POST", "/queue/drop")
+    finally:
+        stop.set()
+        t.join()
+    assert status == 200
+    assert body == {"dropped": 3, "taken": True}
+    assert sorted(removed) == sorted(["h1", "h2", page["id"]])
+    assert list(queue.glob("*.json")) == []
+    assert server.fake.state["paused"] is True  # type: ignore[attr-defined]
+
+
+def test_queue_drop_without_a_daemon_leaves_the_control_waiting(
+    server: Bridge, tts_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridge_mod, "DROP_WAIT_S", 0.1)
+    _queue_hook_message(tts_home / "queue", "h1", 1.0)
+    status, body, _ = call(server, "POST", "/queue/drop", {})
+    assert status == 200
+    assert body == {"dropped": 1, "taken": False}
+    controls = [m for m in mq.scan() if mq.is_drop_all(m)]
+    assert [c["drop_ids"] for c in controls] == [["h1"]]
+
+
+def test_queue_drop_on_an_empty_queue_writes_nothing(server: Bridge, tts_home: Path) -> None:
+    status, body, _ = call(server, "POST", "/queue/drop")
+    assert status == 200
+    assert body == {"dropped": 0, "taken": True}
+    assert mq.scan() == []
+
+
+def test_queue_drop_needs_token(server: Bridge, tts_home: Path) -> None:
+    _queue_hook_message(tts_home / "queue", "h1", 1.0)
+    status, _, _ = call(server, "POST", "/queue/drop", token=None)
+    assert status == 401
+    assert [m["id"] for m in mq.scan()] == ["h1"]
 
 
 def test_flush_source_direct(tts_home: Path) -> None:

@@ -36,7 +36,13 @@ from urllib.parse import parse_qs
 
 from claude_code_tts import __version__, msgqueue
 from claude_code_tts.config import TTS_CONFIG_DIR, load_raw_config
-from claude_code_tts.state import may_play, room_tag
+from claude_code_tts.state import (
+    click_read_through_hold,
+    may_play,
+    room_tag,
+    stop_read,
+    write_playback_state,
+)
 
 TOKEN_FILE = TTS_CONFIG_DIR / "http-token"
 DEFAULT_PORT = 7457
@@ -44,6 +50,7 @@ DEFAULT_BIND = "127.0.0.1"
 JOB_TTL_SECONDS = 300
 MAX_BODY_BYTES = 256 * 1024
 DEFAULT_MAX_CHARS = 10000
+DROP_WAIT_S = 5.0
 
 JOB_STATES = ("queued", "synthesizing", "playing", "paused", "done", "cancelled", "failed")
 
@@ -214,6 +221,11 @@ JOBS = JobRegistry()
 
 # --- Queue side ---
 
+# A session a bridge client speaks for: owner--house--room, the shape a room's
+# CLAUDE_TTS_SESSION has; words of letters, digits and _, joined by single dashes, so
+# nothing in it can name a path.
+SESSION_RE = re.compile(r"\w+(?:-\w+)*(?:--\w+(?:-\w+)*){1,4}", re.ASCII)
+
 
 def write_bridge_message(
     text: str,
@@ -224,16 +236,22 @@ def write_bridge_message(
     label: str = "",
     want_marks: bool = False,
     lane: str = "",
+    session: str = "",
+    name: str = "",
 ) -> dict:
     """Write a queue file the way a hook does, tagged with its source.
 
     session_id is "browser" and project is "<source>:<label>", so the daemon's
-    speaker-transition chime fires when a room and the page interleave. lane
-    "background" lets every other message go first (see daemon.play_order).
+    speaker-transition chime fires when a room and the page interleave. A client that
+    speaks for a room gives `session` (owner--house--room) and `name`: the message then
+    takes that room's place, so it says "<name> of house <house> in room <room>" and a
+    hold's --let names it like any room. lane "background" lets every other message go
+    first, and lane "now" goes before everything (see msgqueue.play_order); the caller
+    tells the daemon a now block is waiting.
     """
     project = f"{source}:{label}" if label else source
     fields = {
-        "session_id": "browser",
+        "session_id": session or "browser",
         "project": project,
         "text": text,
         "persona": persona,
@@ -244,6 +262,8 @@ def write_bridge_message(
     }
     if lane:
         fields["lane"] = lane
+    if name:
+        fields["name"] = name
     _, message = msgqueue.write_message(fields)
     JOBS.create(message["id"], source=source, project=project, persona=persona, lane=lane)
     return message
@@ -438,6 +458,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         mic_hold_max_s: Callable[[], float] | None = None,
         set_let_through: Callable[[list[str]], dict] | None = None,
         read_output_device: Callable[[], dict | None] | None = None,
+        preempt: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(address, BridgeHandler)
         self.token = token
@@ -449,10 +470,12 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.mic_hold_max_s = mic_hold_max_s or (lambda: 0.0)
         self.set_let_through = set_let_through
         self.read_output_device = read_output_device or (lambda: None)
+        self.preempt = preempt or (lambda: None)
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
-    server: BridgeHTTPServer
+    # Narrowed for the reader: BridgeHTTPServer is the only server this handler is built by.
+    server: BridgeHTTPServer  # ty: ignore[invalid-mutable-override]
     protocol_version = "HTTP/1.1"
 
     # -- plumbing --
@@ -590,6 +613,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._stop(body)
         elif path == "/pause":
             self._pause(body)
+        elif path == "/queue/drop":
+            self._drop()
         else:
             self._send_json(404, {"error": "no such route"})
 
@@ -612,8 +637,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
         source = re.sub(r"[^A-Za-z0-9_.-]", "", str(body.get("source") or "browser"))[:32]
         label = str(body.get("label", ""))[:80]
         lane = str(body.get("lane") or "")
-        if lane not in ("", "background"):
-            self._send_json(400, {"error": "lane must be omitted or \"background\"", "lane": lane})
+        if lane not in ("", msgqueue.BACKGROUND_LANE, msgqueue.NOW_LANE):
+            self._send_json(400, {"error": "lane must be omitted, \"background\" or \"now\"", "lane": lane})
+            return
+        session = str(body.get("session") or "")
+        if session and not SESSION_RE.fullmatch(session):
+            self._send_json(400, {"error": "session must be owner--house--room in letters, digits, _ . -"})
+            return
+        name = str(body.get("name") or "").strip()
+        if len(name) > 64:
+            self._send_json(400, {"error": "name is 64 characters at most"})
             return
         msg = write_bridge_message(
             text,
@@ -623,7 +656,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             label=label,
             want_marks=bool(body.get("want_marks", False)),
             lane=lane,
+            session=session,
+            name=name,
         )
+        if lane == msgqueue.NOW_LANE and may_play(
+            self.server.read_playback_state(), str(msg.get("session_id", "")), lane, msg.get("timestamp")
+        ):
+            # After the file is written: the loop's next scan must find what it was cut off for.
+            self.server.preempt()
         self._send_json(202, {"id": msg["id"], "state": "queued"})
 
     def _stop(self, body: dict) -> None:
@@ -641,17 +681,53 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.server.clear_current_message()
                 JOBS.update(current["id"], state="cancelled")
             stopped_current = True
+        preempted = state.get("preempted_message") or {}
+        if preempted.get("source") == source and preempted.get("id"):
+            # Cut off by a now block and waiting to resume: a stop means it does not.
+            write_playback_state(preempted_message=None)
+            JOBS.update(preempted["id"], state="cancelled")
+            stopped_current = True
         self._send_json(200, {"flushed": flushed, "stopped_current": stopped_current})
+
+    def _drop(self) -> None:
+        """Drop every message queued, from rooms and pages alike; the hold stays as it is.
+
+        The same drop-all control `claude-tts kraken --drop` writes: the daemon takes it at the
+        top of its next pass, held or not, and writes one `dropped (kraken)` ledger outcome per
+        hook message. The reply waits up to DROP_WAIT_S for that; `taken` false means the
+        control is in the queue and the daemon has not acted on it yet.
+        """
+        ids = [str(m["id"]) for m in msgqueue.scan() if m.get("type") != "control" and m.get("id")]
+        taken = True
+        if ids:
+            control = msgqueue.write_drop_all_message(ids)
+            deadline = time.monotonic() + DROP_WAIT_S
+            while control.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            taken = not control.exists()
+        self.server.log_fn(f"Bridge asked to drop {len(ids)} queued message(s)")
+        self._send_json(200, {"dropped": len(ids), "taken": taken})
 
     def _pause(self, body: dict) -> None:
         """Hold or release the whole queue. No "paused" in the body toggles.
 
         `let` (a list of room tags or session ids) holds everyone and lets those rooms play;
-        it replaces the list. `{"paused": false}` releases everyone, list included.
+        it replaces the list. `{"paused": false}` releases everyone, list included. Under a
+        person's hold, while a click plays through it, a toggle or `{"paused": true}` stops
+        that read and the hold stays, as the hotkey does (`stopped_read` in the reply).
         """
         before = self.server.read_playback_state()
         want = body.get("paused")
         let = body.get("let")
+        read = click_read_through_hold(before)
+        if read and let is None and (want is None or want is True):
+            stop_read(read)
+            self.server.log_fn("Bridge stopped the read playing through the hold; the hold stays")
+            view = pause_view(before, self.server.mic_hold_max_s())
+            view["changed"] = False
+            view["stopped_read"] = read
+            self._send_json(200, view)
+            return
         if want is None and let is None:
             want = not before.get("paused", False)
         elif want is not None and not isinstance(want, bool):
@@ -796,6 +872,7 @@ class Bridge:
         mic_hold_max_s: Callable[[], float] | None = None,
         set_let_through: Callable[[list[str]], dict] | None = None,
         read_output_device: Callable[[], dict | None] | None = None,
+        preempt: Callable[[], None] | None = None,
     ) -> None:
         self._log = log_fn
         self._read_state = read_playback_state
@@ -804,6 +881,7 @@ class Bridge:
         self._mic_hold_max_s = mic_hold_max_s or (lambda: 0.0)
         self._set_let_through = set_let_through
         self._read_output_device = read_output_device
+        self._preempt = preempt
         self._server: BridgeHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -828,6 +906,7 @@ class Bridge:
                 mic_hold_max_s=self._mic_hold_max_s,
                 set_let_through=self._set_let_through,
                 read_output_device=self._read_output_device,
+                preempt=self._preempt,
             )
         except OSError as e:
             self._log(f"HTTP bridge could not listen on {bind}:{port}: {e}")

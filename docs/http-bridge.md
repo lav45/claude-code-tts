@@ -83,13 +83,33 @@ separate "daemon down" answer because the bridge lives inside the daemon.
   (`session_id` "browser", `project` "<source>:<label>"), so the daemon's speaker-change chime
   fires when a room and the page interleave, exactly as it does between two rooms. Default
   `browser`.
+- `session` and `name` are optional, for a client that speaks for a room (another agent's
+  hooks, say). `session` is the room's id, `owner--house--room` in letters, digits, `_` and
+  single dashes (anything else: `400`); the message takes that room's place, so the announcement
+  comes from the config's `speaker_lines` rules for that id (docs/speaker-lines.md; with the
+  `rooms` set, "<name> of house <house> in room <room>") and `claude-tts hold --let <room>` lets
+  it through. `name` is 64 characters at most. `source` still keys `/jobs`
+  and `/stop`.
 - `want_marks` asks for timing. Costs one synthesis per sentence instead of one per block.
 - `lane` is optional. `"background"` lets every message without it go first: a page reading a
   long document block by block sets it on every block, so a session's one-liner arriving
   mid-read is spoken at the next block boundary instead of behind every queued block. Within a
   lane the order is arrival order. Ageing (`max_age_seconds`) and depth trimming still count
   by arrival, so a background block that waits behind a busy session can age out; keep only a
-  few blocks queued and top up as they finish. Any other value: `400`.
+  few blocks queued and top up as they finish.
+  `"now"` is for a block a person just clicked to hear: it plays before everything queued. A
+  room speaking when it arrives is cut off at the play loop's next poll (every 50 ms), the
+  way a pause cuts it (in sentence mode, the sentence playing is cut), and resumes where it
+  stopped, rewound a little, once no now block is left; then the queue goes on in order. Now
+  blocks never cut each other: a second click queues behind the first (send `/stop` for the
+  page's source first to replace a read; it also cancels a read of that source a click cut
+  off). A person's hold that began before the click does not hold it: the click plays through
+  and the rooms stay held. A toggle during that read (the hotkey, or `POST /pause` with `{}` or
+  `{"paused": true}`) stops the read and keeps the hold; the next toggle releases. A hold begun
+  during the read holds it (it plays first on release), and a recording holds it as it holds
+  everything. Added in 9.58.0 (9.59.1 held every click; 9.60.0 lets a click through, JMO D112);
+  an older bridge answers `400` for it, so a page can
+  send it and resend without `lane` on that `400`. Any other value: `400`.
 
 Response `202`:
 
@@ -209,7 +229,9 @@ toggles it. `{"let": ["tts", "jmo"]}` holds everyone and lets those rooms play; 
 list, so send the whole list each time (up to 32 entries of `[A-Za-z0-9_.-]`). `{"paused": false}`
 releases everyone, list included (the kraken); `let` with `paused: false` is `400`. Anything else
 in `paused`: `400`. The response is the `GET` shape plus `changed`,
-false when the hold already matched. Only the flag is written: the play loop polls it every
+false when the hold already matched. While a click plays through a person's hold, `{}` and
+`{"paused": true}` stop that read instead and leave the hold: `changed` is false and
+`stopped_read` names the read's job id (9.60.0). Only the flag is written: the play loop polls it every
 50 ms and stops the player itself, rewinding a little so nothing is lost on resume, exactly as
 it does for the hotkey. A resume clears a mic hold as well, since a person pressing resume
 knows better than the watcher.
@@ -233,6 +255,28 @@ messages are grouped under their `source`; control messages are not counted.
   person's hold holds every room not in `let_through`).
 - `by` other than `room`: `400`. The queue is read from disk on each call; poll it at a human
   pace (once a second is plenty).
+
+### `POST /queue/drop`
+
+Drops everything queued, rooms and pages alike, and leaves the hold as it is: the Flush button
+for a backlog nobody wants to hear. The body is ignored (send `{}` or none).
+
+```json
+{"dropped": 221, "taken": true}
+```
+
+- It writes the same drop-all control as `claude-tts kraken --drop`. The daemon takes it at the
+  top of its next pass, held or not, drops exactly the messages it names (by id), writes one
+  `dropped (kraken)` outcome per hook message to the voice ledger, and settles each page job as
+  `cancelled`. Speech that arrives after the request is kept.
+- `dropped` is how many queued messages the request named. The reply waits up to five seconds
+  for the daemon; `taken` false means the control is in the queue and the daemon has not acted
+  on it yet (it will, before anything older plays). A message playing when the request lands
+  finishes first, so a long one can make `taken` false.
+- A message the hold or a now block cut off halfway is dropped too (it is not counted in `dropped`); a message
+  playing with no hold is not, `/stop` is for a page's own.
+- To release and drop in one step, call this, then `POST /pause` with `{"paused": false}`.
+- A bridge older than 9.56.0 answers `404`. Added additively.
 
 ## Mute does not apply here
 

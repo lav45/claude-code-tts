@@ -313,6 +313,78 @@ def _summarize_tables(text: str) -> str:
     return "\n".join(out)
 
 
+_ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+_TEENS = ("ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+
+def _pair_words(pair: str, *, last: bool) -> str:
+    """Two digits the way a person reads them inside a longer number: 95, oh five, hundred."""
+    tens, ones = int(pair[0]), int(pair[1])
+    if tens == 0:
+        if ones == 0:
+            return "hundred" if last else "oh oh"
+        return f"oh {_ONES[ones]}"
+    if tens == 1:
+        return _TEENS[ones]
+    return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
+
+
+def _number_in_pairs(digits: str) -> str:
+    """1795 -> seventeen ninety-five, 742 -> seven forty-two, 15616 -> one fifty-six sixteen.
+
+    A PR or issue number is read in pairs, as a person reads a year: at 2x the engine's
+    "one thousand seven hundred ninety-five" runs together, and digit by digit is worse.
+    """
+    digits = digits.lstrip("0") or "0"
+    if len(digits) == 1:
+        return _ONES[int(digits)]
+    # An odd count leads with one digit; the rest are pairs, and the first pair never starts
+    # with a zero once leading zeros are gone.
+    words = [_ONES[int(digits[0])]] if len(digits) % 2 else []
+    pairs = [digits[i : i + 2] for i in range(len(digits) % 2, len(digits), 2)]
+    words += [_pair_words(p, last=i == len(pairs) - 1 and len(digits) > 2) for i, p in enumerate(pairs)]
+    return " ".join(words)
+
+
+_REF_KINDS = {"pr": "pull request", "prs": "pull requests", "pull request": "pull request",
+              "pull requests": "pull requests", "issue": "issue", "issues": "issues"}
+# "#1795", "PR #1795", "issue #42". Not "#byoc-pr", "#L42", "## Heading", "abc#12", "&#38;",
+# "#1a2b" or a fragment inside a URL: the hash stands alone and digits end the token.
+_HASH_REF = re.compile(
+    r"(?<![\w#&/=])(?:\b(PRs?|pull requests?|issues?)[ \t]+)?#(\d{1,7})(?!\w|-\w)", re.IGNORECASE
+)
+_GITHUB_REF_LINK = re.compile(
+    r"\[([^\]\n]*)\]\(\s*https?://github\.com/[\w.-]+/[\w.-]+/(pull|issues)/(\d+)[^)\s]*\s*\)"
+)
+
+
+def _speak_refs(text: str) -> str:
+    """PR and issue numbers as words a listener catches: "pull request seventeen ninety-five".
+
+    A GitHub link names its kind ([widgets #1795](.../pull/1795) is a pull request), a
+    word before the hash names it in prose ("PR #1795", "issue #42"), and a bare "#1795"
+    is "number seventeen ninety-five". The link's URL is dropped later with every other URL.
+    """
+
+    def _link(m: re.Match) -> str:
+        label, kind, num = m.group(1), m.group(2), m.group(3)
+        spoken = f"{'pull request' if kind == 'pull' else 'issue'} {_number_in_pairs(num)}"
+        ref = re.compile(rf"(?:(?:PRs?|pull requests?|issues?)[ \t]+)?#{num}(?!\d)", re.IGNORECASE)
+        if ref.search(label):
+            label = ref.sub(spoken, label, count=1)
+        elif not label.strip():
+            label = spoken
+        return label
+
+    def _hash(m: re.Match) -> str:
+        word = (m.group(1) or "").lower()
+        return f"{_REF_KINDS.get(word, 'number')} {_number_in_pairs(m.group(2))}"
+
+    text = _GITHUB_REF_LINK.sub(_link, text)
+    return _HASH_REF.sub(_hash, text)
+
+
 def _filter_markdown(text: str, *, drop_long_code: bool = False) -> str:
     """Shared markdown cleanup used by both filter modes.
 
@@ -326,6 +398,8 @@ def _filter_markdown(text: str, *, drop_long_code: bool = False) -> str:
     # and let the code under it be spoken.
     text = _remove_fences(text)
     text = _summarize_tables(text)
+    # PR and issue numbers while a GitHub link still says which kind it is.
+    text = _speak_refs(text)
     # Links and images before long spans: a link whose text is code would otherwise lose
     # its brackets to the gap mending and leave "(" behind.
     text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)  # images: keep alt text

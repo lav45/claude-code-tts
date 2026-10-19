@@ -31,6 +31,8 @@ from claude_code_tts.config import TTS_CONFIG_DIR
 QUEUE_DIR = Path(os.environ.get("CLAUDE_TTS_QUEUE_DIR") or TTS_CONFIG_DIR / "queue")
 
 BACKGROUND_LANE = "background"
+# A click on a page: plays before everything, and cuts off a room mid-message (see daemon.py).
+NOW_LANE = "now"
 
 Log = Callable[[str, str], None]
 OnRemoved = Callable[[dict], None]
@@ -70,8 +72,9 @@ def depth() -> int:
 #   timestamp           all            scan and play order, cleanup_old_messages, enforce_max_depth
 #   type "control"      control        next_speakable; daemon.py:daemon_loop hands it to
 #                                      handle_control_message
-#   session_id          all            daemon.py:prepare_message ("browser" for the bridge,
-#                                      "system" for control)
+#   session_id          all            daemon.py:prepare_message ("browser" for the bridge
+#                                      unless its client names a room, "system" for control)
+#   name                hook, bridge   daemon.py:speaker_line, opt. (the name a room says)
 #   project             hook, bridge   daemon.py:prepare_message, register_queued_bridge_jobs,
 #                                      daemon_loop and daemon_status (log and print lines);
 #                                      enforce_max_depth (log line)
@@ -93,7 +96,8 @@ def depth() -> int:
 #   source              bridge         daemon.py:prepare_message, register_queued_bridge_jobs;
 #                                      remove_source
 #   want_marks          bridge         daemon.py:prepare_message
-#   lane                bridge, opt.   play_order ("background"), register_queued_bridge_jobs
+#   lane                bridge, opt.   play_order ("now", "background"), may_play ("now"),
+#                                      register_queued_bridge_jobs
 #   pre_action          control, opt.  daemon.py:handle_control_message ("drain"); "supersede"
 #                                      is taken by Supersedes before the loop picks anything
 #   supersede_session   control, opt.  Supersedes: the session whose older messages are stale
@@ -453,15 +457,17 @@ def remove_source(source: str) -> list[dict]:
 
 
 def play_order(messages: list[dict]) -> list[dict]:
-    """The order the loop speaks in: everything else first, then the background lane.
+    """The order the loop speaks in: the now lane, everything else, then the background lane.
 
     A long read queued by a page marks its blocks lane "background" so a
     room's one-liner arriving mid-read goes next, at the block boundary, instead
-    of behind every queued block. Within a lane the timestamp order holds, and
-    control messages are never background, so they still come first. Ageing and
+    of behind every queued block. A block a person clicked to hear is lane "now"
+    and goes before all of it. Within a lane the timestamp order holds, and
+    control messages are in the middle lane, in their timestamp turn. Ageing and
     depth trimming keep using timestamp order; this is only who speaks next.
     """
-    return sorted(messages, key=lambda m: 1 if m.get("lane") == BACKGROUND_LANE else 0)
+    rank = {NOW_LANE: 0, BACKGROUND_LANE: 2}
+    return sorted(messages, key=lambda m: rank.get(str(m.get("lane") or ""), 1))
 
 
 class PauseLedger:

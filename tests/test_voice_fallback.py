@@ -57,6 +57,19 @@ class TestDaemonVoiceFallback:
         logs, _ = self._run(tmp_path, {"voice": "not-a-piper-model", "voice_sherpa": "vctk-vits"})
         assert not [m for level, m in logs if level == "WARN"]
 
+    def test_the_persona_speaker_goes_to_its_own_model_only(self, tmp_path):
+        """A vctk speaker id passed to the single-speaker default would be wrong or an error."""
+        persona = {"voice": "en_GB-vctk-medium", "speaker_piper": 12}
+        _, gen = self._run(tmp_path, persona)
+        assert gen[0]["speaker"] is None
+        (tmp_path / "en_GB-vctk-medium.onnx").write_bytes(b"model")
+        _, gen = self._run(tmp_path, persona)
+        assert (gen[0]["voice_path"], gen[0]["speaker"]) == (tmp_path / "en_GB-vctk-medium.onnx", 12)
+        _, gen = self._run(tmp_path, {"voice": "en_GB-vctk-medium"})
+        assert gen[0]["speaker"] is None
+        with patch.object(daemon_mod, "VOICES_DIR", tmp_path):
+            assert daemon_mod.describe_voice("p", persona) == "en_GB-vctk-medium#12"
+
     def test_says_once_when_the_missing_voice_turns_up(self, tmp_path):
         """The log can tell fallback from persona without an ear (house room, 2026-09-23)."""
         voice = "en_GB-northern_english_male-medium"

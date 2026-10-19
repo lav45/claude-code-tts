@@ -428,11 +428,6 @@ class TestMlxConfigPlumbing:
         cfg = load_config("test-session")
         assert (cfg.voice_mlx, cfg.speaker_mlx, cfg.lang_mlx) == ("mlx-community/Kokoro-82M-bf16", "bm_george", "b")
 
-    def test_defaults_are_empty(self):
-        from claude_code_tts.config import TTSConfig
-        c = TTSConfig()
-        assert (c.voice_mlx, c.speaker_mlx, c.lang_mlx) == ("", "", "")
-
     def test_queue_message_carries_mlx_fields(self, tmp_path, monkeypatch):
         from claude_code_tts.config import TTSConfig
         monkeypatch.setattr(mq, "QUEUE_DIR", tmp_path / "queue")

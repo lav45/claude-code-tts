@@ -416,6 +416,8 @@ AVAILABLE_VOICES = [
     ("en_GB-northern_english_male-medium", "male", "medium", "Northern English Male - Yorkshire accent", "en/en_GB/northern_english_male/medium"),
     ("en_GB-alba-medium", "female", "medium", "Alba - Scottish female", "en/en_GB/alba/medium"),
     ("en_GB-jenny_dioco-medium", "female", "medium", "Jenny - British female", "en/en_GB/jenny_dioco/medium"),
+    # Multi-speaker: pick one with `claude-tts audition --voice NAME --speakers N`, keep it with persona add --speaker
+    ("en_GB-vctk-medium", "mixed", "medium", "VCTK - 109 British and Irish speakers (CC-BY-4.0 data)", "en/en_GB/vctk/medium"),
 ]
 
 
@@ -1378,6 +1380,9 @@ def do_install(
         # Flip the pre-9.23.0 mute defaults once, so upgraded installs speak in new sessions too
         _migrate_speak_by_default()
 
+        # Keep the room lines an announcing install heard before speaker_lines existed
+        _migrate_speaker_lines()
+
         # Record installed version
         set_installed_version(__version__)
         info(f"Version {__version__} recorded in config")
@@ -1471,6 +1476,26 @@ def _migrate_speak_by_default() -> None:
         info("Sessions muted one by one stay muted. To start every session silent: claude-tts mute --all")
     else:
         info(f"Config version {CONFIG_VERSION}: new sessions speak")
+
+
+def _migrate_speaker_lines() -> None:
+    """Write `speaker_lines: ["rooms"]` once into a config that announces and has no rules.
+
+    9.51.0 to 9.54.1 spoke "<name> of house <house> in room <room>" for owner--house--room ids
+    with no setting; from 9.55.0 the line comes from `speaker_lines` and the shipped default is
+    none. A config that already speaks announcements keeps what it heard. The key being present
+    is what makes this run once: a later `"speaker_lines": []` is kept.
+    """
+    if not TTS_CONFIG_FILE.exists():
+        return
+    config = load_config()
+    if "speaker_lines" in config:
+        return
+    if "announce" not in str(config.get("queue", {}).get("speaker_transition", "")):
+        return
+    config["speaker_lines"] = ["rooms"]
+    save_config(config)
+    info('speaker_lines set to ["rooms"]: announcements keep the owner--house--room lines (see claude-tts name)')
 
 
 # Bumped when an upgrade must rewrite something in an existing config.json once.
